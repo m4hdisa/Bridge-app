@@ -227,7 +227,8 @@ export class Core extends EventEmitter {
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
       const usesXray = server.engine === 'xray'
       const tun = usesTun(settings.mode)
-      const net = tun ? await networkInfo() : { dnsServers: [], otherTunnels: [] as string[], interfaceAlias: undefined }
+      const net = tun ? await networkInfo() : { dnsServers: [], otherTunnels: [] as string[], defaultRoutes: [] as string[], interfaceAlias: undefined, bindPhysical: false }
+      if (net.defaultRoutes.length) this.log(`Default routes before connecting: ${net.defaultRoutes.join(', ')}`)
       const [localDns, pinned] = await Promise.all([
         tun ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
         usesXray ? this.viaXray(server) : this.pinAddress(server)
@@ -236,11 +237,9 @@ export class Core extends EventEmitter {
       else if (tun) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
       // With other tunnels up, pin Bridge's own traffic to the real adapter so it never
       // leaves through (or fights with) another tool's tunnel.
-      const defaultInterface = net.otherTunnels.length ? net.interfaceAlias : undefined
-      if (net.otherTunnels.length) {
-        this.log(`Other tunnels are active: ${net.otherTunnels.join(', ')}. They may conflict with Bridge.`, 'warn')
-        if (defaultInterface) this.log(`Bridge traffic is bound to "${defaultInterface}" to stay out of them`)
-      }
+      const defaultInterface = net.bindPhysical ? net.interfaceAlias : undefined
+      if (net.otherTunnels.length) this.log(`Other tunnels are active: ${net.otherTunnels.join(', ')}. They may conflict with Bridge.`, 'warn')
+      if (defaultInterface) this.log(`Bridge traffic is bound to "${defaultInterface}" to stay out of other tunnels`)
       const config = buildConfig({
         server: pinned,
         settings,
