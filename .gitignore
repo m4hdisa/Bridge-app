@@ -2,6 +2,7 @@ node_modules/
 out/
 dist/
 resources/core/
+resources/xray/
 resources/rules/
 *.log
 *.tsbuildinfo
