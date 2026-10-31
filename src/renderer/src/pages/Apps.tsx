@@ -17,7 +17,9 @@ export function Apps({ state, run }: PageProps) {
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const mode = state.settings.mode
-  const defaultAction: AppAction = mode === 'per-app' ? 'proxy' : 'direct'
+  // Adding an app usually means "send it through the VPN". Only in Full VPN mode
+  // (where everything already uses the VPN) does adding an app mean excluding it.
+  const defaultAction: AppAction = mode === 'tun' ? 'direct' : 'proxy'
   const ruled = new Set(state.appRules.map((r) => r.path.toLowerCase()))
 
   const openPicker = async () => {

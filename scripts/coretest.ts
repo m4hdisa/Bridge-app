@@ -68,6 +68,13 @@ async function main() {
   const results = await core.testLatency([fake], DEFAULT_SETTINGS.testUrl)
   check(results.get(fake.id) === -1, `fake server reports timeout (${results.get(fake.id)})`)
 
+  // A server sing-box refuses to load must not break the test for the others.
+  const broken = { ...fake, id: 'broken', name: 'Broken', outbound: { ...fake.outbound, flow: 'not-a-real-flow' } }
+  const fake2 = { ...fake, id: 'fake2', name: 'Fake 2' }
+  const mixed = await core.testLatency([fake, broken, fake2], DEFAULT_SETTINGS.testUrl)
+  check(mixed.size === 3 && mixed.get('broken') === -1, `broken server skipped, others still tested (${[...mixed.entries()].map(([k, v]) => `${k.slice(0, 6)}=${v}`).join(' ')})`)
+  check(core.logs.some((l) => /skipping "Broken"/.test(l.text)), 'skip is explained in the log')
+
   const errors = core.logs.filter((l) => l.level === 'error' && !/127\.0\.0\.1:9|connection refused|actively refused/i.test(l.text))
   check(!errors.some((l) => /FATAL|deprecated/i.test(l.text)), 'no fatal or deprecation errors in core log')
   const warnings = core.logs.filter((l) => /deprecated/i.test(l.text))

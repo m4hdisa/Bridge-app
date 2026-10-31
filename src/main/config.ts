@@ -1,6 +1,8 @@
 // Builds sing-box JSON configs (written for sing-box 1.14).
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AppRule, ServerProfile, Settings } from '../shared/types'
+import { normalizeOutbound } from './parser'
+import type { AppAction, AppRule, ServerProfile, Settings } from '../shared/types'
 
 export interface ClashApi {
   port: number
@@ -16,17 +18,42 @@ export interface BuildOptions {
   rulesDir?: string
   /** sing-box cache file (remembers rule-sets, fake-ip, etc). */
   cacheFile?: string
+  /** Folder holding the per-app rule-set files written by writeAppRuleSets(). */
+  appRulesDir: string
 }
 
 type Json = Record<string, unknown>
+
+const APP_ACTIONS: AppAction[] = ['block', 'direct', 'proxy']
+/** A regex no exe path can match, so an empty rule-set file is still valid. */
+const NEVER_MATCH = '^:no-app:$'
 
 /** Case-insensitive exact match on a Windows exe path. */
 export function processPathRegex(path: string): string {
   return '(?i)^' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'
 }
 
-function appRule(rules: AppRule[], action: AppRule['action']): string[] {
+function appRule(rules: AppRule[], action: AppAction): string[] {
   return rules.filter((r) => r.enabled && r.action === action).map((r) => processPathRegex(r.path))
+}
+
+function appRuleSetPath(dir: string, action: AppAction): string {
+  return join(dir, `apps-${action}.json`)
+}
+
+/**
+ * Writes one rule-set file per action (block / direct / proxy). sing-box reloads
+ * local rule-sets when their file changes, so app rules apply without a restart
+ * (a restart would tear down TUN and cut the whole system's connection).
+ */
+export function writeAppRuleSets(dir: string, rules: AppRule[]): void {
+  mkdirSync(dir, { recursive: true })
+  for (const action of APP_ACTIONS) {
+    const paths = appRule(rules, action)
+    const text = JSON.stringify({ version: 3, rules: [{ process_path_regex: paths.length ? paths : [NEVER_MATCH] }] }, null, 2)
+    const file = appRuleSetPath(dir, action)
+    if (!existsSync(file) || readFileSync(file, 'utf8') !== text) writeFileSync(file, text)
+  }
 }
 
 function remoteDnsServer(url: string): Json {
@@ -39,14 +66,12 @@ function remoteDnsServer(url: string): Json {
   return server
 }
 
+/** Builds the config and writes the app rule-set files it points to. */
 export function buildConfig(o: BuildOptions): Json {
-  const { settings, appRules } = o
+  const { settings } = o
   const useTun = settings.mode !== 'system-proxy'
   const iranRules = settings.bypassIran && o.rulesDir
-
-  const blockApps = appRule(appRules, 'block')
-  const directApps = appRule(appRules, 'direct')
-  const proxyApps = appRule(appRules, 'proxy')
+  writeAppRuleSets(o.appRulesDir, o.appRules)
 
   const inbounds: Json[] = [
     { type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: settings.mixedPort }
@@ -70,8 +95,9 @@ export function buildConfig(o: BuildOptions): Json {
     { protocol: 'dns', action: 'hijack-dns' },
     { ip_is_private: true, outbound: 'direct' }
   ]
-  if (blockApps.length) routeRules.push({ process_path_regex: blockApps, action: 'reject' })
-  if (directApps.length) routeRules.push({ process_path_regex: directApps, outbound: 'direct' })
+  // App rules live in rule-set files (always present, possibly empty) so they can change while connected.
+  routeRules.push({ rule_set: ['apps-block'], action: 'reject' })
+  routeRules.push({ rule_set: ['apps-direct'], outbound: 'direct' })
   if (settings.bypassIran) {
     dnsRules.push({ domain_suffix: ['.ir'], server: 'dns-local' })
     routeRules.push({ domain_suffix: ['.ir'], outbound: 'direct' })
@@ -80,22 +106,30 @@ export function buildConfig(o: BuildOptions): Json {
       routeRules.push({ rule_set: ['geosite-ir', 'geoip-ir'], outbound: 'direct' })
     }
   }
-  if (settings.mode === 'per-app' && proxyApps.length) {
-    routeRules.push({ process_path_regex: proxyApps, outbound: 'proxy' })
+  if (settings.mode === 'per-app') {
+    routeRules.push({ rule_set: ['apps-proxy'], outbound: 'proxy' })
+  }
+
+  const ruleSets: Json[] = APP_ACTIONS.map((action) => ({
+    type: 'local',
+    tag: `apps-${action}`,
+    format: 'source',
+    path: appRuleSetPath(o.appRulesDir, action)
+  }))
+  if (iranRules) {
+    ruleSets.push(
+      { type: 'local', tag: 'geoip-ir', format: 'binary', path: join(o.rulesDir!, 'geoip-ir.srs') },
+      { type: 'local', tag: 'geosite-ir', format: 'binary', path: join(o.rulesDir!, 'geosite-ir.srs') }
+    )
   }
 
   const route: Json = {
     rules: routeRules,
+    rule_set: ruleSets,
     final: settings.mode === 'per-app' ? 'direct' : 'proxy',
     auto_detect_interface: true,
     default_domain_resolver: 'dns-local',
-    find_process: blockApps.length + directApps.length + proxyApps.length > 0
-  }
-  if (iranRules) {
-    route.rule_set = [
-      { type: 'local', tag: 'geoip-ir', format: 'binary', path: join(o.rulesDir!, 'geoip-ir.srs') },
-      { type: 'local', tag: 'geosite-ir', format: 'binary', path: join(o.rulesDir!, 'geosite-ir.srs') }
-    ]
+    find_process: true
   }
 
   const experimental: Json = {
@@ -113,7 +147,7 @@ export function buildConfig(o: BuildOptions): Json {
     },
     inbounds,
     outbounds: [
-      { ...o.server.outbound, tag: 'proxy' },
+      { ...normalizeOutbound(o.server.outbound), tag: 'proxy' },
       { type: 'direct', tag: 'direct' }
     ],
     route,
@@ -131,7 +165,7 @@ export function buildTestConfig(servers: ServerProfile[], clashApi: ClashApi): J
     dns: { servers: [{ type: 'local', tag: 'dns-local' }] },
     outbounds: [
       { type: 'direct', tag: 'direct' },
-      ...servers.map((s) => ({ ...s.outbound, tag: s.id }))
+      ...servers.map((s) => ({ ...normalizeOutbound(s.outbound), tag: s.id }))
     ],
     route: { final: 'direct', default_domain_resolver: 'dns-local' },
     experimental: {

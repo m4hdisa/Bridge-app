@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildConfig, buildTestConfig, type ClashApi } from './config'
+import { buildConfig, buildTestConfig, writeAppRuleSets, type ClashApi } from './config'
 import { clearSystemProxy, freePort, setSystemProxy } from './system'
 import type { AppRule, AppTraffic, CoreStatus, LogLine, ServerProfile, Settings, TrafficStats } from '../shared/types'
 
@@ -25,6 +25,16 @@ interface ClashConnection {
 }
 
 const MAX_LOGS = 1000
+/** How long to give sing-box to notice a changed rule-set file before resetting connections. */
+const RULE_RELOAD_DELAY_MS = 1500
+
+async function clashDelete(api: ClashApi, path: string): Promise<void> {
+  await fetch(`http://127.0.0.1:${api.port}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${api.secret}` },
+    signal: AbortSignal.timeout(3000)
+  })
+}
 
 async function clashGet<T>(api: ClashApi, path: string, timeoutMs = 3000): Promise<T> {
   const res = await fetch(`http://127.0.0.1:${api.port}${path}`, {
@@ -113,7 +123,8 @@ export class Core extends EventEmitter {
         appRules,
         clashApi: api,
         rulesDir: existsSync(join(this.paths.rulesDir, 'geosite-ir.srs')) ? this.paths.rulesDir : undefined,
-        cacheFile: join(this.paths.dataDir, 'cache.db')
+        cacheFile: join(this.paths.dataDir, 'cache.db'),
+        appRulesDir: this.appRulesDir
       })
       const configFile = join(this.paths.dataDir, 'config.json')
       writeFileSync(configFile, JSON.stringify(config, null, 2))
@@ -136,6 +147,32 @@ export class Core extends EventEmitter {
       await this.cleanup()
       this.setStatus({ state: 'stopped', error: msg })
       throw e
+    }
+  }
+
+  private get appRulesDir(): string {
+    return join(this.paths.dataDir, 'app-rules')
+  }
+
+  /**
+   * Applies app rule changes to the running core without restarting it: sing-box
+   * reloads the rule-set files on its own. Open connections of the affected apps
+   * are then closed so those apps reconnect through their new route; nothing else
+   * on the system is interrupted.
+   */
+  async updateAppRules(rules: AppRule[], affectedPaths: string[]): Promise<void> {
+    writeAppRuleSets(this.appRulesDir, rules)
+    const api = this.api
+    if (this.status.state !== 'running' || !api || !affectedPaths.length) return
+    await new Promise((r) => setTimeout(r, RULE_RELOAD_DELAY_MS))
+    const affected = new Set(affectedPaths.map((p) => p.toLowerCase()))
+    try {
+      const snap = await clashGet<{ connections: ClashConnection[] | null }>(api, '/connections')
+      const targets = (snap.connections || []).filter((c) => affected.has((c.metadata.processPath || '').toLowerCase()))
+      await Promise.all(targets.map((c) => clashDelete(api, `/connections/${encodeURIComponent(c.id)}`)))
+      if (targets.length) this.log(`App rules updated, reconnecting ${targets.length} connection(s)`)
+    } catch (e) {
+      this.log(`Could not reset app connections: ${e instanceof Error ? e.message : e}`, 'warn')
     }
   }
 
@@ -227,16 +264,37 @@ export class Core extends EventEmitter {
   async testLatency(servers: ServerProfile[], testUrl: string): Promise<Map<string, number>> {
     const results = new Map<string, number>()
     if (!servers.length) return results
-    const api: ClashApi = { port: await freePort(), secret: randomUUID() }
     const configFile = join(this.paths.dataDir, 'latency-test.json')
     const workDir = join(this.paths.dataDir, 'latency-test')
     mkdirSync(workDir, { recursive: true })
-    writeFileSync(configFile, JSON.stringify(buildTestConfig(servers, api), null, 2))
-    const child = await launch(this.paths.singBox, configFile, workDir, api, (line, isErr) => {
-      if (isErr && /ERROR|FATAL/.test(line)) this.coreLine(line, true)
-    })
+
+    // If sing-box refuses one server ("initialize outbound[N]: ..."), mark it failed and retry without it.
+    let testable = [...servers]
+    let child: ChildProcess | undefined
+    let api: ClashApi = { port: 0, secret: '' }
+    while (!child && testable.length) {
+      api = { port: await freePort(), secret: randomUUID() }
+      writeFileSync(configFile, JSON.stringify(buildTestConfig(testable, api), null, 2))
+      let fatal = ''
+      try {
+        child = await launch(this.paths.singBox, configFile, workDir, api, (line, isErr) => {
+          if (/FATAL/.test(line)) fatal = line
+          if (isErr && /ERROR|FATAL/.test(line)) this.coreLine(line, true)
+        })
+      } catch (e) {
+        // outbound[0] is "direct", so server i is outbound[i + 1].
+        const index = Number(fatal.match(/outbound\[(\d+)\]/)?.[1]) - 1
+        const bad = testable[index]
+        if (!bad) throw e
+        this.log(`Latency test: skipping "${bad.name}" (${fatal.replace(/^.*?outbound\[\d+\]:\s*/, '')})`, 'warn')
+        results.set(bad.id, -1)
+        testable = testable.filter((s) => s !== bad)
+      }
+    }
+    if (!child) return results
+
     try {
-      const queue = [...servers]
+      const queue = [...testable]
       const worker = async () => {
         for (let s = queue.shift(); s; s = queue.shift()) {
           try {
@@ -251,12 +309,13 @@ export class Core extends EventEmitter {
           }
         }
       }
-      await Promise.all(Array.from({ length: Math.min(8, servers.length) }, worker))
+      await Promise.all(Array.from({ length: Math.min(8, testable.length) }, worker))
     } finally {
-      if (child.exitCode === null) {
+      const running = child
+      if (running.exitCode === null) {
         await new Promise<void>((resolve) => {
-          child.once('exit', () => resolve())
-          child.kill()
+          running.once('exit', () => resolve())
+          running.kill()
         })
       }
     }

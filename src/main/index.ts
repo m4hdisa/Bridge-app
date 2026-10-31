@@ -104,7 +104,7 @@ async function connect(): Promise<void> {
   await core.start(server, settings, appRules)
 }
 
-/** Restarts the core when settings or rules change while connected. */
+/** Restarts the core when the server or settings change while connected. */
 async function reconnectIfRunning(): Promise<void> {
   if (core.status.state === 'running') await connect()
 }
@@ -171,24 +171,30 @@ handle('removeSubscription', (id: string) => {
 })
 
 handle('updateSettings', async (patch: Partial<Settings>) => {
+  const before = JSON.stringify(store.state.settings)
   store.update((s) => Object.assign(s.settings, patch))
   pushState()
-  await reconnectIfRunning()
+  if (JSON.stringify(store.state.settings) !== before) await reconnectIfRunning()
 })
 
+// App rule changes are applied live (no core restart, so the connection never drops).
 handle('saveAppRule', async (rule: AppRule) => {
+  let oldPath: string | undefined
   store.update((s) => {
     const i = s.appRules.findIndex((r) => r.id === rule.id || r.path.toLowerCase() === rule.path.toLowerCase())
-    if (i >= 0) s.appRules[i] = { ...rule, id: s.appRules[i].id }
-    else s.appRules.push(rule)
+    if (i >= 0) {
+      oldPath = s.appRules[i].path
+      s.appRules[i] = { ...rule, id: s.appRules[i].id }
+    } else s.appRules.push(rule)
   })
   pushState()
-  await reconnectIfRunning()
+  await core.updateAppRules(store.state.appRules, oldPath ? [oldPath, rule.path] : [rule.path])
 })
 handle('removeAppRule', async (id: string) => {
+  const removed = store.state.appRules.find((r) => r.id === id)
   store.update((s) => (s.appRules = s.appRules.filter((r) => r.id !== id)))
   pushState()
-  await reconnectIfRunning()
+  await core.updateAppRules(store.state.appRules, removed ? [removed.path] : [])
 })
 handle('listProcesses', async () => Promise.all((await listProcesses()).map(withIcon)))
 handle('pickExe', async () => {

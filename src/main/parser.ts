@@ -5,6 +5,22 @@ import type { Outbound, Protocol, ServerProfile } from '../shared/types'
 
 export class UnsupportedLinkError extends Error {}
 
+/** uTLS fingerprints sing-box accepts. Panels sometimes send others (e.g. Xray's "unsafe"). */
+const FINGERPRINTS = new Set(['chrome', 'firefox', 'edge', 'safari', '360', 'qq', 'ios', 'android', 'random', 'randomized'])
+
+/**
+ * Fixes values sing-box would refuse to start with. Applied when parsing and again
+ * when building a config, so servers imported by older versions are fixed too.
+ */
+export function normalizeOutbound<T extends Record<string, unknown>>(outbound: T): T {
+  const tls = outbound.tls as { utls?: { fingerprint?: string } } | undefined
+  const fp = tls?.utls?.fingerprint
+  if (!tls?.utls || fp === undefined) return outbound
+  const fixed = FINGERPRINTS.has(fp.toLowerCase()) ? fp.toLowerCase() : 'chrome'
+  if (fixed === fp) return outbound
+  return { ...outbound, tls: { ...tls, utls: { ...tls.utls, fingerprint: fixed } } }
+}
+
 export function decodeBase64(input: string): string {
   let s = input.trim().replace(/-/g, '+').replace(/_/g, '/').replace(/\s+/g, '')
   while (s.length % 4 !== 0) s += '='
@@ -185,7 +201,7 @@ function profile(protocol: Protocol, link: string, name: string, server: string,
     server,
     port,
     link,
-    outbound
+    outbound: normalizeOutbound(outbound)
   }
 }
 

@@ -1,4 +1,4 @@
-// Offline self-test: parses sample links, builds configs for every mode and
+﻿// Offline self-test: parses sample links, builds configs for every mode and
 // validates them with `sing-box check`. Does NOT start a VPN or touch the network.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -84,6 +84,15 @@ const sub = Buffer.from(Object.values(SAMPLES).join('\n')).toString('base64')
 const extracted = extractLinks(sub)
 if (extracted.length === Object.keys(SAMPLES).length) ok(`base64 subscription -> ${extracted.length} links`)
 else fail('base64 subscription', `expected ${Object.keys(SAMPLES).length}, got ${extracted.length}`)
+{
+  const p = parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?security=tls&sni=x.com&fp=unsafe&type=tcp#fp')
+  const fp = (p.outbound.tls as { utls?: { fingerprint?: string } }).utls?.fingerprint
+  if (fp === 'chrome') ok('unknown uTLS fingerprint "unsafe" -> chrome')
+  else fail('unknown uTLS fingerprint', `got ${fp}`)
+  // A server saved by an older version still has "unsafe": the config builder must fix it too.
+  const stale = { ...p, outbound: { ...p.outbound, tls: { enabled: true, server_name: 'x.com', utls: { enabled: true, fingerprint: 'unsafe' } } } }
+  check('stale server with fp=unsafe', buildConfig({ server: stale, settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
+}
 try {
   parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?type=xhttp&security=tls')
   fail('xhttp should be rejected', 'no error thrown')
@@ -93,7 +102,7 @@ try {
 
 console.log('Config (every server, tun mode)')
 for (const p of profiles) {
-  check(`server ${p.name}`, buildConfig({ server: p, settings, appRules, clashApi: { port: 19090, secret: 'x' }, rulesDir }))
+  check(`server ${p.name}`, buildConfig({ server: p, settings, appRules, clashApi: { port: 19090, secret: 'x' }, rulesDir, appRulesDir: join(dir, 'app-rules') }))
 }
 
 console.log('Config (every mode)')
@@ -101,11 +110,11 @@ for (const mode of ['system-proxy', 'tun', 'per-app'] as ConnectionMode[]) {
   for (const bypassIran of [true, false]) {
     check(
       `mode ${mode} bypassIran=${bypassIran}`,
-      buildConfig({ server: profiles[0], settings: { ...settings, mode, bypassIran }, appRules, clashApi: { port: 19090, secret: 'x' }, rulesDir, cacheFile: join(dir, 'cache.db') })
+      buildConfig({ server: profiles[0], settings: { ...settings, mode, bypassIran }, appRules, clashApi: { port: 19090, secret: 'x' }, rulesDir, appRulesDir: join(dir, 'app-rules'), cacheFile: join(dir, 'cache.db') })
     )
   }
 }
-check('DoH by hostname', buildConfig({ server: profiles[0], settings: { ...settings, remoteDns: 'https://dns.google/dns-query' }, appRules: [], clashApi: { port: 19090, secret: 'x' } }))
+check('DoH by hostname', buildConfig({ server: profiles[0], settings: { ...settings, remoteDns: 'https://dns.google/dns-query' }, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
 check('latency test config', buildTestConfig(profiles, { port: 19091, secret: 'x' }))
 
 rmSync(dir, { recursive: true, force: true })
