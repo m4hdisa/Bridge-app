@@ -17,7 +17,19 @@ export interface ServerProfile {
   subscriptionId?: string
   /** Last measured latency in ms; -1 means the test failed, undefined means never tested. */
   latency?: number
+  /**
+   * Which core talks to this server. "xray" is chosen automatically for configs only
+   * Xray understands (xhttp, VLESS Encryption...); the user can also switch manually.
+   * Missing means "sing-box".
+   */
+  engine?: Engine
+  /** The Xray outbound for this server, when Xray can run it. */
+  xray?: Record<string, unknown>
+  /** True when sing-box can't run this server at all (then `outbound` is only a placeholder). */
+  xrayOnly?: boolean
 }
+
+export type Engine = 'sing-box' | 'xray'
 
 /** A config in a subscription that Bridge can't use, and why. */
 export interface SkippedConfig {
@@ -46,8 +58,14 @@ export interface Subscription {
  * system-proxy: only apps that respect the Windows proxy setting go through the VPN.
  * tun:          everything goes through the VPN (except apps marked direct/block).
  * per-app:      only apps marked "proxy" go through the VPN, everything else is direct.
+ * proxy-only:   just a local SOCKS5/HTTP proxy; nothing on the system is changed.
  */
-export type ConnectionMode = 'system-proxy' | 'tun' | 'per-app'
+export type ConnectionMode = 'system-proxy' | 'tun' | 'per-app' | 'proxy-only'
+
+/** Modes that create the TUN adapter (and need administrator rights). */
+export function usesTun(mode: ConnectionMode): boolean {
+  return mode === 'tun' || mode === 'per-app'
+}
 
 export type AppAction = 'proxy' | 'direct' | 'block'
 
@@ -70,6 +88,11 @@ export interface Settings {
   mixedPort: number
   /** URL used for real latency tests. */
   testUrl: string
+  /**
+   * sing-box strict_route: blocks DNS outside the TUN adapter (stops DNS leaks) but also
+   * breaks other VPN / game tools running alongside Bridge. Off by default.
+   */
+  strictRoute: boolean
   logLevel: 'debug' | 'info' | 'warn' | 'error'
 }
 
@@ -106,6 +129,10 @@ export interface CoreStatus {
   error?: string
   /** Checked right after connecting and then every 20 seconds while connected. */
   health?: Health
+  /** Other tunnels (VPNs, game boosters) that were active when connecting. */
+  otherTunnels?: string[]
+  /** Local SOCKS5/HTTP proxy port while running. */
+  proxyPort?: number
 }
 
 /** Where an app's open connections go: through the VPN, direct, or some of each. */
@@ -157,6 +184,8 @@ export interface BridgeApi {
   importClipboard(): Promise<ImportResult>
   removeServer(id: string): Promise<void>
   selectServer(id: string): Promise<void>
+  /** Switch which core runs a server (only when both can). */
+  setServerEngine(id: string, engine: Engine): Promise<void>
   testLatency(ids?: string[]): Promise<void>
 
   addSubscription(name: string, url: string): Promise<ImportResult>

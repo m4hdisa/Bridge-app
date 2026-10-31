@@ -5,8 +5,11 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildConfig, buildTestConfig, withServerIp, writeAppRuleSets, type ClashApi } from './config'
+import { connect } from 'node:net'
 import { pickDirectDns, ServerResolver } from './resolve'
-import { clearSystemProxy, flushDns, freePort, physicalDnsServers, setSystemProxy } from './system'
+import { buildXrayConfig, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
+import { clearSystemProxy, flushDns, freePort, networkInfo, setSystemProxy } from './system'
+import { usesTun } from '../shared/types'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats } from '../shared/types'
 
 export interface CorePaths {
@@ -16,6 +19,32 @@ export interface CorePaths {
   dataDir: string
   /** Set to false to never touch the Windows proxy setting (used by tests). Default true. */
   manageSystemProxy?: boolean
+  /** xray.exe, for servers only Xray can run. */
+  xray?: string
+}
+
+function socksOutbound(port: number): ServerProfile['outbound'] {
+  return { type: 'socks', server: '127.0.0.1', server_port: port, version: '5' } as unknown as ServerProfile['outbound']
+}
+
+function portOpen(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = connect({ host: '127.0.0.1', port })
+    s.once('connect', () => {
+      s.destroy()
+      resolve(true)
+    })
+    s.once('error', () => resolve(false))
+  })
+}
+
+async function killProcess(child?: ChildProcess): Promise<void> {
+  if (!child || child.exitCode !== null) return
+  child.removeAllListeners('exit')
+  await new Promise<void>((resolve) => {
+    child.once('exit', () => resolve())
+    child.kill()
+  })
 }
 
 interface ClashConnection {
@@ -84,6 +113,7 @@ export class Core extends EventEmitter {
   logs: LogLine[] = []
 
   private child?: ChildProcess
+  private xrayChild?: ChildProcess
   private api?: ClashApi
   private proxyPort?: number
   private statsTimer?: NodeJS.Timeout
@@ -114,6 +144,60 @@ export class Core extends EventEmitter {
     return { ...server, outbound: withServerIp(server.outbound, r.ip) }
   }
 
+  /** Same as pinAddress, for a server's Xray outbound. */
+  private async pinXray(outbound: XrayOutbound, quiet = false): Promise<XrayOutbound> {
+    const { host } = xrayServer(outbound)
+    const r = host ? await this.resolver.resolve(host) : undefined
+    if (!r) return outbound
+    if (!quiet && r.ip !== host) this.log(`Server ${host} -> ${r.ip} (${r.source}, Xray)`)
+    return xrayWithServerIp(outbound, r.ip)
+  }
+
+  private xrayLine = (line: string) => {
+    const level: LogLine['level'] = /\[(Error)\]|Failed/.test(line) ? 'error' : /\[Warning\]/.test(line) ? 'warn' : 'info'
+    this.log(`[xray] ${line}`, level)
+  }
+
+  /** Starts xray.exe with one local SOCKS inbound per entry; resolves once the first port accepts connections. */
+  private async launchXray(entries: { port: number; outbound: XrayOutbound }[], name: string): Promise<ChildProcess> {
+    const exe = this.paths.xray
+    if (!exe || !existsSync(exe)) throw new Error('Xray core not found; this server needs it (reinstall Bridge)')
+    const file = join(this.paths.dataDir, `${name}.json`)
+    writeFileSync(file, JSON.stringify(buildXrayConfig(entries), null, 2))
+    const child = spawn(exe, ['run', '-c', file], { windowsHide: true })
+    const feed = (chunk: Buffer) => chunk.toString().split(/\r?\n/).filter((l) => l.trim()).forEach(this.xrayLine)
+    child.stdout?.on('data', feed)
+    child.stderr?.on('data', feed)
+    let exited = false
+    child.once('exit', () => (exited = true))
+    const deadline = Date.now() + 10000
+    while (Date.now() < deadline) {
+      if (exited) throw new Error('Xray exited during startup (see Logs)')
+      if (await portOpen(entries[0].port)) return child
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    child.kill()
+    throw new Error('Xray did not become ready within 10 seconds')
+  }
+
+  /**
+   * For servers run by Xray, starts xray.exe and returns the server as sing-box should see it:
+   * a SOCKS hop into Xray. Other servers are returned unchanged.
+   */
+  private async viaXray(server: ServerProfile): Promise<ServerProfile> {
+    if (server.engine !== 'xray') return server
+    if (!server.xray) throw new Error('This server has no Xray settings; update its subscription or import it again')
+    const port = await freePort()
+    this.xrayChild = await this.launchXray([{ port, outbound: await this.pinXray(server.xray) }], 'xray-config')
+    this.xrayChild.once('exit', (code) => {
+      if (this.status.state !== 'running') return
+      this.log(`Xray stopped unexpectedly (exit code ${code})`, 'error')
+      void this.stop().then(() => this.setStatus({ state: 'stopped', error: 'Xray core stopped unexpectedly, see Logs' }))
+    })
+    this.log(`Using Xray core for ${server.name} (local SOCKS ${port})`)
+    return { ...server, outbound: socksOutbound(port) }
+  }
+
   log(text: string, level: LogLine['level'] = 'info'): void {
     const line: LogLine = { time: Date.now(), level, text }
     this.logs.push(line)
@@ -141,12 +225,22 @@ export class Core extends EventEmitter {
       const api: ClashApi = { port: await freePort(), secret: randomUUID() }
       // Direct traffic must resolve with the real network's DNS; read it before TUN takes over.
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
+      const usesXray = server.engine === 'xray'
+      const tun = usesTun(settings.mode)
+      const net = tun ? await networkInfo() : { dnsServers: [], otherTunnels: [] as string[], interfaceAlias: undefined }
       const [localDns, pinned] = await Promise.all([
-        settings.mode !== 'system-proxy' ? physicalDnsServers().then((s) => pickDirectDns(s, log)) : Promise.resolve(undefined),
-        this.pinAddress(server)
+        tun ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
+        usesXray ? this.viaXray(server) : this.pinAddress(server)
       ])
-      if (localDns) this.log(`Direct apps resolve names with DNS ${localDns}`)
-      else if (settings.mode !== 'system-proxy') this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
+      if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? 'DNS-over-HTTPS' : 'DNS'} ${localDns.server}`)
+      else if (tun) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
+      // With other tunnels up, pin Bridge's own traffic to the real adapter so it never
+      // leaves through (or fights with) another tool's tunnel.
+      const defaultInterface = net.otherTunnels.length ? net.interfaceAlias : undefined
+      if (net.otherTunnels.length) {
+        this.log(`Other tunnels are active: ${net.otherTunnels.join(', ')}. They may conflict with Bridge.`, 'warn')
+        if (defaultInterface) this.log(`Bridge traffic is bound to "${defaultInterface}" to stay out of them`)
+      }
       const config = buildConfig({
         server: pinned,
         settings,
@@ -155,7 +249,10 @@ export class Core extends EventEmitter {
         rulesDir: existsSync(join(this.paths.rulesDir, 'geosite-ir.srs')) ? this.paths.rulesDir : undefined,
         cacheFile: join(this.paths.dataDir, 'cache.db'),
         appRulesDir: this.appRulesDir,
-        localDns
+        localDns,
+        // xray.exe's own connection to the VPN server must not loop back into the VPN.
+        bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : undefined,
+        defaultInterface
       })
       const configFile = join(this.paths.dataDir, 'config.json')
       writeFileSync(configFile, JSON.stringify(config, null, 2))
@@ -171,7 +268,14 @@ export class Core extends EventEmitter {
       }
       this.resetStats()
       this.statsTimer = setInterval(() => void this.pollStats(), 1000)
-      this.setStatus({ state: 'running', mode: settings.mode, serverId: server.id, startedAt: Date.now() })
+      this.setStatus({
+        state: 'running',
+        mode: settings.mode,
+        serverId: server.id,
+        startedAt: Date.now(),
+        otherTunnels: net.otherTunnels.length ? net.otherTunnels : undefined,
+        proxyPort: settings.mixedPort
+      })
       void this.checkHealth()
       this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS)
     } catch (e) {
@@ -247,11 +351,14 @@ export class Core extends EventEmitter {
     if (this.statsTimer) clearInterval(this.statsTimer)
     if (this.healthTimer) clearInterval(this.healthTimer)
     this.statsTimer = this.healthTimer = undefined
-    const usedTun = !!this.child && this.settings?.mode !== 'system-proxy'
+    const usedTun = !!this.child && !!this.settings && usesTun(this.settings.mode)
     if (this.proxyPort !== undefined) {
       await clearSystemProxy(this.proxyPort).catch((e) => this.log(`Could not clear system proxy: ${e}`, 'warn'))
       this.proxyPort = undefined
     }
+    const xrayChild = this.xrayChild
+    this.xrayChild = undefined
+    await killProcess(xrayChild)
     const child = this.child
     this.child = undefined
     this.api = undefined
@@ -269,7 +376,7 @@ export class Core extends EventEmitter {
   private onUnexpectedExit(code: number | null): void {
     this.log(`sing-box stopped unexpectedly (exit code ${code})`, 'error')
     this.child = undefined
-    if (this.settings?.mode !== 'system-proxy') void flushDns()
+    if (this.settings && usesTun(this.settings.mode)) void flushDns()
     void this.cleanup().then(() => this.setStatus({ state: 'stopped', error: 'Core stopped unexpectedly, see Logs' }))
   }
 
@@ -343,13 +450,35 @@ export class Core extends EventEmitter {
     // If sing-box refuses one server ("initialize outbound[N]: ..."), mark it failed and retry without it.
     // Resolve each distinct server host once, safely, like a real connection does.
     const lookups = new Map<string, Promise<ServerProfile>>()
+    const isXray = (s: ServerProfile) => s.engine === 'xray'
+    for (const s of servers) if (isXray(s) && !s.xray) results.set(s.id, -1)
     let testable = await Promise.all(
-      servers.map((s) => {
-        const key = String(s.outbound.server)
-        if (!lookups.has(key)) lookups.set(key, this.pinAddress(s, true))
-        return lookups.get(key)!.then((p) => ({ ...s, outbound: withServerIp(s.outbound, String(p.outbound.server)) }))
-      })
+      servers
+        .filter((s) => !isXray(s) || s.xray)
+        .map((s) => {
+          if (isXray(s)) return s
+          const key = String(s.outbound.server)
+          if (!lookups.has(key)) lookups.set(key, this.pinAddress(s, true))
+          return lookups.get(key)!.then((p) => ({ ...s, outbound: withServerIp(s.outbound, String(p.outbound.server)) }))
+        })
     )
+
+    // Servers run by Xray are tested through one extra xray.exe with a SOCKS port per server.
+    let xrayTest: ChildProcess | undefined
+    const xrayEntries: { id: string; port: number; outbound: XrayOutbound }[] = []
+    for (const s of testable.filter(isXray)) xrayEntries.push({ id: s.id, port: await freePort(), outbound: await this.pinXray(s.xray as XrayOutbound, true) })
+    if (xrayEntries.length) {
+      try {
+        xrayTest = await this.launchXray(xrayEntries, 'xray-latency-test')
+        const ports = new Map(xrayEntries.map((e) => [e.id, e.port]))
+        testable = testable.map((s) => (ports.has(s.id) ? { ...s, outbound: socksOutbound(ports.get(s.id)!) } : s))
+      } catch (e) {
+        this.log(`Latency test: Xray servers skipped (${e instanceof Error ? e.message : e})`, 'warn')
+        for (const s of testable.filter(isXray)) results.set(s.id, -1)
+        testable = testable.filter((s) => !isXray(s))
+      }
+    }
+
     let child: ChildProcess | undefined
     let api: ClashApi = { port: 0, secret: '' }
     while (!child && testable.length) {
@@ -371,7 +500,10 @@ export class Core extends EventEmitter {
         testable = testable.filter((s) => s !== bad)
       }
     }
-    if (!child) return results
+    if (!child) {
+      await killProcess(xrayTest)
+      return results
+    }
 
     try {
       const queue = [...testable]
@@ -391,13 +523,8 @@ export class Core extends EventEmitter {
       }
       await Promise.all(Array.from({ length: Math.min(8, testable.length) }, worker))
     } finally {
-      const running = child
-      if (running.exitCode === null) {
-        await new Promise<void>((resolve) => {
-          running.once('exit', () => resolve())
-          running.kill()
-        })
-      }
+      await killProcess(child)
+      await killProcess(xrayTest)
     }
     return results
   }

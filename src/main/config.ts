@@ -2,7 +2,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { normalizeOutbound } from './parser'
-import type { AppAction, AppRule, ServerProfile, Settings } from '../shared/types'
+import type { DirectDns } from './resolve'
+import { usesTun, type AppAction, type AppRule, type ServerProfile, type Settings } from '../shared/types'
 
 export interface ClashApi {
   port: number
@@ -20,8 +21,15 @@ export interface BuildOptions {
   cacheFile?: string
   /** Folder holding the per-app rule-set files written by writeAppRuleSets(). */
   appRulesDir: string
-  /** The physical network's DNS server (e.g. the router). Falls back to sing-box's "local" resolver. */
-  localDns?: string
+  /** How Direct traffic resolves names (see pickDirectDns). Falls back to sing-box's "local" resolver. */
+  localDns?: DirectDns
+  /** Exe paths whose traffic always goes direct, e.g. Bridge's own xray.exe. */
+  bypassProcesses?: string[]
+  /**
+   * Bind outgoing traffic to this adapter (the real Wi-Fi / Ethernet) instead of letting
+   * sing-box pick one, so it never leaves through another tool's tunnel.
+   */
+  defaultInterface?: string
 }
 
 type Json = Record<string, unknown>
@@ -86,7 +94,7 @@ export function writeAppRuleSets(dir: string, rules: AppRule[]): void {
  * So direct apps never depend on the VPN server being up.
  */
 function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
-  const local: Json = o.localDns ? { type: 'udp', tag: 'dns-local', server: o.localDns } : { type: 'local', tag: 'dns-local' }
+  const local: Json = o.localDns ? { type: o.localDns.type, tag: 'dns-local', server: o.localDns.server } : { type: 'local', tag: 'dns-local' }
   const rules: Json[] = []
   if (o.settings.bypassIran) {
     rules.push({ domain_suffix: ['.ir'], server: 'dns-local' })
@@ -103,7 +111,7 @@ function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
 /** Builds the config and writes the app rule-set files it points to. */
 export function buildConfig(o: BuildOptions): Json {
   const { settings } = o
-  const useTun = settings.mode !== 'system-proxy'
+  const useTun = usesTun(settings.mode)
   const iranRules = settings.bypassIran && o.rulesDir
   writeAppRuleSets(o.appRulesDir, o.appRules)
 
@@ -118,7 +126,7 @@ export function buildConfig(o: BuildOptions): Json {
       address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
       mtu: 9000,
       auto_route: true,
-      strict_route: true,
+      strict_route: settings.strictRoute,
       stack: 'mixed'
     })
   }
@@ -128,6 +136,7 @@ export function buildConfig(o: BuildOptions): Json {
     { protocol: 'dns', action: 'hijack-dns' },
     { ip_is_private: true, outbound: 'direct' }
   ]
+  if (o.bypassProcesses?.length) routeRules.push({ process_path_regex: o.bypassProcesses.map(processPathRegex), outbound: 'direct' })
   // App rules live in rule-set files (always present, possibly empty) so they can change while connected.
   routeRules.push({ rule_set: ['apps-block'], action: 'reject' })
   routeRules.push({ rule_set: ['apps-direct'], outbound: 'direct' })
@@ -156,10 +165,11 @@ export function buildConfig(o: BuildOptions): Json {
     rules: routeRules,
     rule_set: ruleSets,
     final: settings.mode === 'per-app' ? 'direct' : 'proxy',
-    auto_detect_interface: true,
     default_domain_resolver: 'dns-local',
     find_process: true
   }
+  if (o.defaultInterface) route.default_interface = o.defaultInterface
+  else route.auto_detect_interface = true
 
   const experimental: Json = {
     clash_api: { external_controller: `127.0.0.1:${o.clashApi.port}`, secret: o.clashApi.secret }

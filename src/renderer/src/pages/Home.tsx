@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
-import type { AppRoute, ConnectionMode, CoreStatus, HealthCheck } from '../../../shared/types'
+import { usesTun, type AppRoute, type ConnectionMode, type CoreStatus, type HealthCheck } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { ago, bytes, duration, speed } from '../format'
 
 const MODES: { id: ConnectionMode; label: string; help: string }[] = [
   { id: 'per-app', label: 'Per-App', help: 'Only the apps you choose on the Apps page use the VPN. Everything else uses your normal internet.' },
   { id: 'tun', label: 'Full VPN', help: 'All apps use the VPN, except apps you set to Direct or Block on the Apps page.' },
-  { id: 'system-proxy', label: 'System Proxy', help: 'Sets the Windows proxy. Browsers and apps that respect it use the VPN. No admin rights needed.' }
+  { id: 'system-proxy', label: 'System Proxy', help: 'Sets the Windows proxy. Browsers and apps that respect it use the VPN. No admin rights needed.' },
+  { id: 'proxy-only', label: 'Proxy only', help: 'Only runs a local SOCKS5 / HTTP proxy. Nothing on the system changes; point any app at it yourself (e.g. Telegram proxy settings). No admin rights needed.' }
 ]
 
 export function Home({ state, status, stats, run, go }: PageProps) {
@@ -22,7 +23,8 @@ export function Home({ state, status, stats, run, go }: PageProps) {
   const mode = MODES.find((m) => m.id === state.settings.mode)!
   const busy = status.state === 'starting' || status.state === 'stopping'
   const running = status.state === 'running'
-  const needsAdmin = state.settings.mode !== 'system-proxy' && !admin
+  const needsAdmin = usesTun(state.settings.mode) && !admin
+  const proxyAddress = `127.0.0.1:${status.proxyPort ?? state.settings.mixedPort}`
   const proxyApps = state.appRules.filter((r) => r.enabled && r.action === 'proxy').length
 
   return (
@@ -43,6 +45,7 @@ export function Home({ state, status, stats, run, go }: PageProps) {
             <div className="server-line">
               <strong>{server.name}</strong>
               <span className="badge">{server.protocol}</span>
+              {server.engine === 'xray' && <span className="badge xray">Xray</span>}
               {server.latency !== undefined && <Latency ms={server.latency} />}
             </div>
           ) : (
@@ -75,7 +78,24 @@ export function Home({ state, status, stats, run, go }: PageProps) {
             <button onClick={() => run(() => api.relaunchAsAdmin())}>Restart as admin</button>
           </div>
         )}
+        <div className="proxy-line">
+          <span className="muted">Local proxy (SOCKS5 + HTTP){running ? '' : ' while connected'}:</span>
+          <code>{proxyAddress}</code>
+          <button className="link" onClick={() => run(() => navigator.clipboard.writeText(proxyAddress), () => `Copied ${proxyAddress}`)}>
+            Copy
+          </button>
+        </div>
       </div>
+
+      {running && status.otherTunnels?.length ? (
+        <div className="warn-box column">
+          <strong>Other VPN / tunnel tools are active</strong>
+          <span className="small">
+            {status.otherTunnels.join(', ')}. Bridge keeps its own traffic on your real network adapter to avoid them, but two tools
+            capturing the same apps can still conflict. If something breaks, try Per-App mode with only the apps you need, or Proxy only mode.
+          </span>
+        </div>
+      ) : null}
 
       {running && <HealthCard status={status} mode={state.settings.mode} run={run} />}
 

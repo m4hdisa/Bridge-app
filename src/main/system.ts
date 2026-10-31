@@ -71,22 +71,40 @@ if ($s.ProxyServer -eq '127.0.0.1:${port}') {
 }`)
 }
 
+export interface NetworkInfo {
+  /** The real (physical) adapter that carries the default route, e.g. "Wi-Fi". */
+  interfaceAlias?: string
+  /** Its IPv4 DNS servers. */
+  dnsServers: string[]
+  /** Other virtual adapters that are up: tunnels of other VPN / game tools that may conflict. */
+  otherTunnels: string[]
+}
+
 /**
- * The IPv4 DNS servers of the network adapter that carries the default route
- * (usually the router). Must be called before TUN starts. Empty if not found.
+ * Looks at the network before TUN starts: which real adapter goes to the internet,
+ * its DNS, and which other tunnels (WARP, game boosters, other VPNs) are active.
  */
-export async function physicalDnsServers(): Promise<string[]> {
+export async function networkInfo(): Promise<NetworkInfo> {
   try {
     const { stdout } = await powershell(`
-$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne 'Bridge' }
-$best = $routes | Sort-Object { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4).InterfaceMetric } | Select-Object -First 1
-if ($best) { (Get-DnsClientServerAddress -InterfaceIndex $best.ifIndex -AddressFamily IPv4).ServerAddresses }`)
-    return stdout
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip))
+$phys = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up')
+$metric = { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).InterfaceMetric }
+$routes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne 'Bridge' })
+$best = $routes | Where-Object { $phys.ifIndex -contains $_.ifIndex } | Sort-Object $metric | Select-Object -First 1
+if (-not $best) { $best = $routes | Sort-Object $metric | Select-Object -First 1 }
+$dns = @()
+if ($best) { $dns = @((Get-DnsClientServerAddress -InterfaceIndex $best.ifIndex -AddressFamily IPv4).ServerAddresses) }
+$others = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.Name -ne 'Bridge' -and ($phys.ifIndex -notcontains $_.ifIndex) -and $_.InterfaceDescription -notmatch 'Hyper-V|Loopback|Bluetooth|VirtualBox|VMware' } | ForEach-Object { "$($_.Name) ($($_.InterfaceDescription))" })
+[pscustomobject]@{ alias = $best.InterfaceAlias; dns = $dns; others = $others } | ConvertTo-Json -Compress`)
+    const j = JSON.parse(stdout.trim() || '{}') as { alias?: string; dns?: string[] | string; others?: string[] | string }
+    const arr = (v?: string[] | string) => (Array.isArray(v) ? v : v ? [v] : [])
+    return {
+      interfaceAlias: j.alias || undefined,
+      dnsServers: arr(j.dns).filter((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip)),
+      otherTunnels: arr(j.others)
+    }
   } catch {
-    return []
+    return { dnsServers: [], otherTunnels: [] }
   }
 }
 

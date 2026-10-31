@@ -53,6 +53,7 @@ export function Apps({ state, run }: PageProps) {
         {mode === 'per-app' && 'Per-App mode: only apps set to "Use VPN" go through the VPN. Everything else is direct.'}
         {mode === 'tun' && 'Full VPN mode: every app uses the VPN, except apps set to "Direct" or "Block".'}
         {mode === 'system-proxy' && 'System Proxy mode: "Direct" and "Block" apply to apps that use the system proxy. Switch to Per-App for full control.'}
+        {mode === 'proxy-only' && 'Proxy only mode: "Direct" and "Block" apply to apps you point at the local proxy. Switch to Per-App for full control.'}
       </p>
 
       {picker && (

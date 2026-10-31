@@ -14,6 +14,7 @@ const root = join(__dirname, '..')
 const dataDir = mkdtempSync(join(tmpdir(), 'bridge-coretest-'))
 const core = new Core({
   singBox: join(root, 'resources', 'core', 'sing-box.exe'),
+  xray: join(root, 'resources', 'xray', 'xray.exe'),
   rulesDir: join(root, 'resources', 'rules'),
   dataDir,
   manageSystemProxy: false
@@ -79,6 +80,30 @@ async function main() {
   const mixed = await core.testLatency([fake, broken, fake2], DEFAULT_SETTINGS.testUrl)
   check(mixed.size === 3 && mixed.get('broken') === -1, `broken server skipped, others still tested (${[...mixed.entries()].map(([k, v]) => `${k.slice(0, 6)}=${v}`).join(' ')})`)
   check(core.logs.some((l) => /skipping "Broken"/.test(l.text)), 'skip is explained in the log')
+
+  console.log('Xray server (proxy-only mode)')
+  const xrayServer = parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@127.0.0.1:9?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=dLN2Ibq5VLAB9qG5RveB10JA-pJctpgW7BT7_cfC6Sw&sid=6ba8&type=xhttp&path=%2Fx#Fake-XHTTP')
+  check(xrayServer.engine === 'xray', 'xhttp server is assigned to the Xray core')
+  const xrayPort = port + 7
+  await core.start(xrayServer, { ...DEFAULT_SETTINGS, mode: 'proxy-only', mixedPort: xrayPort, logLevel: 'debug' }, [])
+  check(core.status.state === 'running', 'connected with Xray behind sing-box')
+  check(core.logs.some((l) => /Using Xray core for Fake-XHTTP/.test(l.text)), 'xray.exe started with a local SOCKS port')
+  const before = core.logs.length
+  await new Promise<void>((resolve) => {
+    const req = request({ host: '127.0.0.1', port: xrayPort, method: 'GET', path: 'http://example.com/', headers: { Host: 'example.com' }, timeout: 6000 }, (res) => {
+      res.resume()
+      resolve()
+    })
+    req.on('error', () => resolve())
+    req.on('timeout', () => req.destroy())
+    req.end()
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  check(core.logs.slice(before).some((l) => /outbound\/socks\[proxy\]/.test(l.text)), 'traffic goes sing-box -> SOCKS hop into Xray')
+  await core.stop()
+  check(core.status.state === 'stopped', 'stopped (xray.exe stopped too)')
+  const xr = await core.testLatency([xrayServer, fake], DEFAULT_SETTINGS.testUrl)
+  check(xr.get(xrayServer.id) === -1 && xr.get(fake.id) === -1, 'latency test handles Xray and sing-box servers together')
 
   const errors = core.logs.filter((l) => l.level === 'error' && !/127\.0\.0\.1:9|connection refused|actively refused/i.test(l.text))
   check(!errors.some((l) => /FATAL|deprecated/i.test(l.text)), 'no fatal or deprecation errors in core log')

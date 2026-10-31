@@ -1,4 +1,4 @@
-﻿// Offline self-test: parses sample links, builds configs for every mode and
+// Offline self-test: parses sample links, builds configs for every mode and
 // validates them with `sing-box check`. Does NOT start a VPN or touch the network.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -38,6 +38,7 @@ const settings: Settings = {
   bypassIran: true,
   mixedPort: 2080,
   testUrl: 'https://www.gstatic.com/generate_204',
+  strictRoute: false,
   logLevel: 'info'
 }
 
@@ -92,17 +93,25 @@ else fail('base64 subscription', `expected ${Object.keys(SAMPLES).length}, got $
   const stale = { ...p, outbound: { ...p.outbound, tls: { enabled: true, server_name: 'x.com', utls: { enabled: true, fingerprint: 'unsafe' } } } }
   check('stale server with fp=unsafe', buildConfig({ server: stale, settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
 }
+// Configs sing-box can't run are handed to the Xray core instead of being rejected.
 for (const [label, link] of [
-  ['VLESS Encryption rejected with a clear error', 'vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?encryption=mlkem768x25519plus.native.0rtt.abc&type=tcp'],
-  ['TCP headerType=http rejected with a clear error', 'vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:80?encryption=none&type=tcp&headerType=http&host=a.com']
+  ['VLESS Encryption -> Xray core', 'vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?encryption=mlkem768x25519plus.native.0rtt.abc&type=tcp'],
+  ['xhttp -> Xray core', 'vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?type=xhttp&security=tls']
 ]) {
   try {
-    parseLink(link)
-    fail(label, 'no error thrown')
+    const p = parseLink(link)
+    if (p.engine === 'xray' && p.xrayOnly && p.xray) ok(label)
+    else fail(label, `engine=${p.engine}`)
   } catch (e) {
-    if (/not supported/.test(String(e))) ok(`${label}: "${(e as Error).message}"`)
-    else fail(label, e)
+    fail(label, e)
   }
+}
+try {
+  parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:80?encryption=none&type=tcp&headerType=http&host=a.com')
+  fail('plain VLESS + http header should be rejected by both cores', 'no error thrown')
+} catch (e) {
+  if (/not supported/.test(String(e))) ok(`plain VLESS + http header rejected by both cores with a clear error`)
+  else fail('plain VLESS + http header', e)
 }
 {
   const d = describeLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:7779?type=xhttp&security=reality#VLESS-REALITY-XHTTP')
@@ -110,10 +119,10 @@ for (const [label, link] of [
   else fail('describeLink', JSON.stringify(d))
 }
 try {
-  parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?type=xhttp&security=tls')
-  fail('xhttp should be rejected', 'no error thrown')
+  parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?type=quic&security=tls')
+  fail('transport neither core supports should be rejected', 'no error thrown')
 } catch {
-  ok('xhttp rejected with a clear error')
+  ok('transport neither core supports (quic) rejected with a clear error')
 }
 
 console.log('Config (every server, tun mode)')
@@ -122,7 +131,7 @@ for (const p of profiles) {
 }
 
 console.log('Config (every mode)')
-for (const mode of ['system-proxy', 'tun', 'per-app'] as ConnectionMode[]) {
+for (const mode of ['system-proxy', 'tun', 'per-app', 'proxy-only'] as ConnectionMode[]) {
   for (const bypassIran of [true, false]) {
     check(
       `mode ${mode} bypassIran=${bypassIran}`,
@@ -130,7 +139,7 @@ for (const mode of ['system-proxy', 'tun', 'per-app'] as ConnectionMode[]) {
     )
   }
 }
-check('explicit local DNS server', buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), localDns: '192.168.1.1' }))
+check('explicit local DNS server', buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), localDns: { type: 'https', server: '1.1.1.1' }, defaultInterface: 'Wi-Fi', bypassProcesses: ['C:\\Program Files\\Bridge\\resources\\xray\\xray.exe'] }))
 check('latency test config', buildTestConfig(profiles, { port: 19091, secret: 'x' }))
 
 rmSync(dir, { recursive: true, force: true })

@@ -8,6 +8,8 @@ files:
 extraResources:
   - from: resources/core
     to: core
+  - from: resources/xray
+    to: xray
   - from: resources/rules
     to: rules
   - from: resources/icon.png

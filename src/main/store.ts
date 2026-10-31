@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS: Settings = {
   bypassIran: true,
   mixedPort: 2080,
   testUrl: 'https://www.gstatic.com/generate_204',
+  strictRoute: false,
   logLevel: 'info'
 }
 

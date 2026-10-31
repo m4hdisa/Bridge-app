@@ -206,7 +206,7 @@ function SubscriptionCard(props: {
       {skipped.length > 0 && (
         <div className="skipped">
           <button className="link" onClick={() => setShowSkipped((v) => !v)}>
-            {showSkipped ? '▾' : '▸'} {skipped.length} config(s) not supported by the core
+            {showSkipped ? '▾' : '▸'} {skipped.length} config(s) not supported by either core
           </button>
           {showSkipped &&
             skipped.map((c, i) => (
@@ -225,6 +225,32 @@ function SubscriptionCard(props: {
   )
 }
 
+/** Shows which core runs a server; when both can, clicking switches it. */
+function EngineSwitch({ server: s, run }: { server: ServerProfile; run: PageProps['run'] }) {
+  const engine = s.engine === 'xray' ? 'xray' : 'sing-box'
+  const canSwitch = !!s.xray && !s.xrayOnly
+  const label = engine === 'xray' ? 'Xray' : 'sing-box'
+  if (!canSwitch) {
+    return (
+      <span className={'badge' + (engine === 'xray' ? ' xray' : '')} title={s.xrayOnly ? 'Only the Xray core supports this config' : 'Only sing-box supports this config'}>
+        {label}
+      </span>
+    )
+  }
+  return (
+    <button
+      className={'badge switch' + (engine === 'xray' ? ' xray' : '')}
+      title={`Runs on ${label}. Click to use ${engine === 'xray' ? 'sing-box' : 'Xray'} instead.`}
+      onClick={(e) => {
+        e.stopPropagation()
+        void run(() => api.setServerEngine(s.id, engine === 'xray' ? 'sing-box' : 'xray'))
+      }}
+    >
+      {label} ⇄
+    </button>
+  )
+}
+
 function ServerRow({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
   return (
     <div className={'row selectable' + (selected ? ' selected' : '')} onClick={() => run(() => api.selectServer(s.id))}>
@@ -236,6 +262,7 @@ function ServerRow({ server: s, selected, run }: { server: ServerProfile; select
         </div>
       </div>
       <span className="badge">{s.protocol}</span>
+      <EngineSwitch server={s} run={run} />
       {s.latency !== undefined && <Latency ms={s.latency} />}
       <button
         className="danger"

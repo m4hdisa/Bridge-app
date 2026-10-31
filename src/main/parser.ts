@@ -1,6 +1,7 @@
 // Converts share links (vless://, vmess://, trojan://, ss://, hysteria2://, tuic://)
 // into sing-box outbound objects.
 import { randomUUID } from 'node:crypto'
+import { linkToXray, xrayServer, type XrayOutbound } from './xray'
 import type { Outbound, Protocol, ServerProfile } from '../shared/types'
 
 export class UnsupportedLinkError extends Error {}
@@ -72,7 +73,45 @@ export function describeLink(link: string): { name: string; kind: string } {
   }
 }
 
+/**
+ * Parses a share link for whichever core can run it: sing-box when possible,
+ * otherwise Xray (xhttp, VLESS Encryption, TCP HTTP camouflage...).
+ */
 export function parseLink(link: string): ServerProfile {
+  let xray: XrayOutbound | undefined
+  let xrayError: unknown
+  try {
+    xray = linkToXray(link)
+  } catch (e) {
+    xrayError = e
+  }
+  try {
+    return { ...parseSingBoxLink(link), engine: 'sing-box', xray }
+  } catch (e) {
+    if (!(e instanceof UnsupportedLinkError) || !xray) {
+      // Neither core can use it; explain with the more useful error.
+      throw e instanceof UnsupportedLinkError && xrayError ? new UnsupportedLinkError(`${e.message}, and Xray can't run it either: ${(xrayError as Error).message}`) : e
+    }
+    const { host, port } = xrayServer(xray)
+    const { name } = describeLink(link)
+    const protocol = (link.slice(0, link.indexOf('://')).toLowerCase() === 'ss' ? 'shadowsocks' : link.slice(0, link.indexOf('://')).toLowerCase()) as Protocol
+    return {
+      id: randomUUID(),
+      name: name || `${host}:${port}`,
+      protocol,
+      server: host,
+      port,
+      link,
+      // Placeholder: at connect time sing-box gets a SOCKS hop into xray.exe instead.
+      outbound: { type: protocol, server: host, server_port: port },
+      engine: 'xray',
+      xray,
+      xrayOnly: true
+    }
+  }
+}
+
+function parseSingBoxLink(link: string): ServerProfile {
   const scheme = link.slice(0, link.indexOf('://')).toLowerCase()
   switch (scheme) {
     case 'vless':

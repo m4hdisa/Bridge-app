@@ -6,7 +6,8 @@ import { describeLink, extractLinks, parseLink } from './parser'
 import { Store } from './store'
 import { fetchSubscription } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
-import type { AppRule, ImportResult, RunningProcess, ServerProfile, Settings, SkippedConfig } from '../shared/types'
+import { usesTun } from '../shared/types'
+import type { AppRule, Engine, ImportResult, RunningProcess, ServerProfile, Settings, SkippedConfig } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
 
@@ -15,6 +16,7 @@ const dataDir = app.getPath('userData')
 const store = new Store(join(dataDir, 'state.json'))
 const core = new Core({
   singBox: join(resourcesDir, 'core', 'sing-box.exe'),
+  xray: join(resourcesDir, 'xray', 'xray.exe'),
   rulesDir: join(resourcesDir, 'rules'),
   dataDir: join(dataDir, 'core')
 })
@@ -131,7 +133,7 @@ async function connect(): Promise<void> {
   const { servers, selectedServerId, settings, appRules } = store.state
   const server = servers.find((s) => s.id === selectedServerId)
   if (!server) throw new Error('Select a server first')
-  if (settings.mode !== 'system-proxy' && !(await isAdmin())) {
+  if (usesTun(settings.mode) && !(await isAdmin())) {
     throw new Error('VPN (TUN) and Per-App modes need administrator rights. Use "Restart as admin".')
   }
   await core.start(server, settings, appRules)
@@ -177,6 +179,18 @@ handle('selectServer', async (id: string) => {
   store.update((s) => (s.selectedServerId = id))
   pushState()
   await reconnectIfRunning()
+})
+handle('setServerEngine', async (id: string, engine: Engine) => {
+  const server = store.state.servers.find((s) => s.id === id)
+  if (!server) throw new Error('Server not found')
+  if (engine === 'xray' && !server.xray) throw new Error('Xray cannot run this server')
+  if (engine === 'sing-box' && server.xrayOnly) throw new Error('sing-box cannot run this server')
+  store.update(() => {
+    server.engine = engine
+    server.latency = undefined
+  })
+  pushState()
+  if (store.state.selectedServerId === id) await reconnectIfRunning()
 })
 handle('testLatency', async (ids?: string[]) => {
   const targets = store.state.servers.filter((s) => !ids || ids.includes(s.id))

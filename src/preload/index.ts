@@ -19,6 +19,7 @@ const api: BridgeApi = {
   importClipboard: invoke('importClipboard'),
   removeServer: invoke('removeServer'),
   selectServer: invoke('selectServer'),
+  setServerEngine: invoke('setServerEngine'),
   testLatency: invoke('testLatency'),
   addSubscription: invoke('addSubscription'),
   updateSubscription: invoke('updateSubscription'),

@@ -8,8 +8,8 @@ export function createMockBridge(): BridgeApi {
   const state: AppState = {
     servers: [
       { id: 's1', name: 'Germany Reality', protocol: 'vless', server: '1.2.3.4', port: 443, link: '', outbound: { type: 'vless' }, latency: 182 },
-      { id: 's2', name: 'Netherlands WS', protocol: 'vmess', server: 'nl.example.com', port: 443, link: '', outbound: { type: 'vmess' }, subscriptionId: 'sub1', latency: 640 },
-      { id: 's3', name: 'Finland Hysteria2', protocol: 'hysteria2', server: 'fi.example.com', port: 8443, link: '', outbound: { type: 'hysteria2' }, subscriptionId: 'sub1', latency: -1 }
+      { id: 's2', name: 'Netherlands WS', protocol: 'vmess', server: 'nl.example.com', port: 443, link: '', outbound: { type: 'vmess' }, subscriptionId: 'sub1', latency: 640, engine: 'xray', xray: {} },
+      { id: 's3', name: 'Finland Hysteria2', protocol: 'hysteria2', server: 'fi.example.com', port: 8443, link: '', outbound: { type: 'hysteria2' }, subscriptionId: 'sub1', latency: -1, engine: 'xray', xray: {}, xrayOnly: true }
     ],
     subscriptions: [
       {
@@ -32,7 +32,7 @@ export function createMockBridge(): BridgeApi {
       { id: 'r2', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
       { id: 'r3', name: 'steam.exe', path: 'C:\\Program Files (x86)\\Steam\\steam.exe', action: 'direct', enabled: false }
     ],
-    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info' }
+    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info' }
   }
   let status: CoreStatus = { state: 'stopped' }
   const logs: LogLine[] = [{ time: Date.now(), level: 'info', text: 'Mock backend: running in the browser, nothing is real.' }]
@@ -64,6 +64,11 @@ export function createMockBridge(): BridgeApi {
     importClipboard: async () => ({ added: 0, errors: ['Mock backend cannot import'] }),
     removeServer: async (id) => {
       state.servers = state.servers.filter((s) => s.id !== id)
+      emitState()
+    },
+    setServerEngine: async (id, engine) => {
+      const s = state.servers.find((x) => x.id === id)
+      if (s) s.engine = engine
       emitState()
     },
     selectServer: async (id) => {
@@ -110,6 +115,8 @@ export function createMockBridge(): BridgeApi {
         mode: state.settings.mode,
         serverId: state.selectedServerId,
         startedAt: now,
+        proxyPort: 2080,
+        otherTunnels: ['EZConnect (Wintun Userspace Tunnel)'],
         health: { server: { ok: true, latency: 412, checkedAt: now }, internet: { ok: true, latency: 96, checkedAt: now } }
       })
       log('Mock: connected')

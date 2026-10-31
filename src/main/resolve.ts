@@ -54,21 +54,57 @@ async function dnsServerWorks(server: string): Promise<boolean> {
   })
 }
 
+/** A minimal DNS query (A record, recursion desired) in wire format. */
+function dnsQueryPacket(name: string): Buffer {
+  const header = Buffer.from([0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+  const labels = name.split('.').map((l) => Buffer.concat([Buffer.from([l.length]), Buffer.from(l)]))
+  return Buffer.concat([header, ...labels, Buffer.from([0x00, 0x00, 0x01, 0x00, 0x01])])
+}
+
+/** Sends one RFC 8484 DoH query (the exact protocol sing-box uses) and checks for an answer. */
+async function dohServerWorks(server: string): Promise<boolean> {
+  try {
+    const q = dnsQueryPacket('www.microsoft.com').toString('base64url')
+    const res = await fetch(`https://${server}/dns-query?dns=${q}`, {
+      headers: { accept: 'application/dns-message' },
+      signal: AbortSignal.timeout(3000)
+    })
+    if (!res.ok) return false
+    const body = Buffer.from(await res.arrayBuffer())
+    return body.length > 12 && body.readUInt16BE(6) > 0 // at least one answer record
+  } catch {
+    return false
+  }
+}
+
+export interface DirectDns {
+  type: 'https' | 'udp'
+  server: string
+}
+
+/** Public DoH resolvers reachable by IP (their certificates cover the IP), in order of preference. */
+const DOH_SERVERS = ['1.1.1.1', '8.8.8.8', '9.9.9.9', '1.0.0.1', '8.8.4.4', '149.112.112.112']
+
 /**
- * Chooses the DNS server that Direct apps' domains are resolved with while TUN is on.
- * The network's own DNS is preferred (fastest, local CDN answers), but only if it
- * really answers: VPN tools like Cloudflare WARP set it to a loopback address
- * (127.0.2.2) that can't be reached from sing-box, which left Direct apps with no
- * DNS at all. Public resolvers are the fallback. Must run before TUN starts.
+ * Chooses how Direct apps' domains are resolved while TUN is on.
+ * Plain DNS (port 53) can't be used: sing-box's strict_route blocks port 53 outside
+ * the TUN adapter on Windows (DNS leak protection), so a router or 1.1.1.1:53 resolver
+ * times out and Direct apps (e.g. Chrome) could open nothing, even though the VPN
+ * worked. DNS over HTTPS uses port 443 and is not affected, so a DoH server is probed
+ * first; plain network DNS is only a last resort. Must run before TUN starts.
  */
-export async function pickDirectDns(networkServers: string[], log: (text: string, level?: 'info' | 'warn') => void): Promise<string | undefined> {
+export async function pickDirectDns(networkServers: string[], log: (text: string, level?: 'info' | 'warn') => void): Promise<DirectDns | undefined> {
+  const doh = await Promise.all(DOH_SERVERS.map((s) => dohServerWorks(s)))
+  const dohServer = DOH_SERVERS.find((_, i) => doh[i])
+  if (dohServer) return { type: 'https', server: dohServer }
+
+  log('No DNS-over-HTTPS server answered; falling back to plain DNS, Direct apps may not resolve names', 'warn')
   const usable = networkServers.filter((s) => !s.startsWith('127.') && !s.startsWith('0.'))
   for (const s of networkServers.filter((s) => !usable.includes(s))) log(`Network DNS ${s} is a local address (probably another VPN tool), not using it`, 'warn')
-  const candidates = [...new Set([...usable, '1.1.1.1', '8.8.8.8', '9.9.9.9'])]
+  const candidates = [...new Set([...usable, '1.1.1.1', '8.8.8.8'])]
   const results = await Promise.all(candidates.map((s) => dnsServerWorks(s)))
-  const chosen = candidates.find((_, i) => results[i])
-  for (const [i, s] of candidates.entries()) if (!results[i] && usable.includes(s)) log(`Network DNS ${s} did not answer, skipping it`, 'warn')
-  return chosen
+  const udp = candidates.find((_, i) => results[i])
+  return udp ? { type: 'udp', server: udp } : undefined
 }
 
 export class ServerResolver {

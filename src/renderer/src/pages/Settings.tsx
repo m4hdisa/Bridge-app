@@ -18,6 +18,11 @@ export function SettingsPage({ state, run }: PageProps) {
           Open Iranian sites directly (.ir and Iran IP / domain lists)
         </label>
 
+        <label className="check">
+          <input type="checkbox" checked={draft.strictRoute} onChange={(e) => set('strictRoute', e.target.checked)} />
+          Strict mode: block DNS leaks outside the VPN adapter (can break other VPN / game tools running at the same time)
+        </label>
+
         <label>
           Local proxy port (HTTP + SOCKS5 on 127.0.0.1)
           <input type="number" min={1024} max={65535} value={draft.mixedPort} onChange={(e) => set('mixedPort', Number(e.target.value))} />

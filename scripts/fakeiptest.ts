@@ -1,4 +1,4 @@
-﻿// Safe FakeIP test (no TUN, nothing changes on the system).
+// Safe FakeIP test (no TUN, nothing changes on the system).
 // With a VPN server that is DOWN, checks that:
 //  1. DNS still answers instantly (with a fake IP), instead of waiting on the server
 //  2. a Direct app connecting to that fake IP really reaches the internet
@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { buildConfig, writeAppRuleSets } from '../src/main/config'
 import { parseLink } from '../src/main/parser'
 import { DEFAULT_SETTINGS } from '../src/main/store'
-import { physicalDnsServers } from '../src/main/system'
+import { networkInfo } from '../src/main/system'
 import { pickDirectDns } from '../src/main/resolve'
 import type { AppAction, AppRule } from '../src/shared/types'
 
@@ -64,7 +64,7 @@ async function main() {
   const appRulesDir = join(dir, 'app-rules')
   const port = 20000 + Math.floor(Math.random() * 20000)
   const dnsPort = port + 2
-  const localDns = await pickDirectDns(await physicalDnsServers(), (t) => console.log('  [dns] ' + t))
+  const localDns = await pickDirectDns((await networkInfo()).dnsServers, (t) => console.log('  [dns] ' + t))
   const config = buildConfig({
     server: deadServer,
     settings: { ...DEFAULT_SETTINGS, mode: 'per-app', mixedPort: port, logLevel: 'debug' },
