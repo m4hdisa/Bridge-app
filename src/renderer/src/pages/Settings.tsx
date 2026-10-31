@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { Settings } from '../../../shared/types'
+import { LoaderCircle } from 'lucide-react'
+import type { Settings, UpdateStatus } from '../../../shared/types'
+import { ago } from '../format'
 import { api, type PageProps } from '../App'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/common'
@@ -9,7 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 
-export function SettingsPage({ state, run }: PageProps) {
+export function SettingsPage({ state, update, run }: PageProps) {
   const [draft, setDraft] = useState<Settings>(state.settings)
   useEffect(() => setDraft(state.settings), [state.settings])
 
@@ -29,6 +31,18 @@ export function SettingsPage({ state, run }: PageProps) {
           <CardContent className="divide-y">
             <Row title="Open Iranian sites directly" description=".ir domains and Iran's IP / domain lists skip the VPN, so local sites stay fast and reachable.">
               <Switch checked={draft.bypassIran} onCheckedChange={(v) => set('bypassIran', v)} />
+            </Row>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Servers</CardTitle>
+            <CardDescription>Keeping ping results fresh. Pick “Auto” in the server list on the Dashboard to always use the best one.</CardDescription>
+          </CardHeader>
+          <CardContent className="divide-y">
+            <Row title="Ping servers automatically" description="Tests every server when Bridge starts, after subscription updates and every 10 minutes. Uses a little traffic on each server.">
+              <Switch checked={draft.autoPing} onCheckedChange={(v) => set('autoPing', v)} />
             </Row>
           </CardContent>
         </Card>
@@ -93,6 +107,27 @@ export function SettingsPage({ state, run }: PageProps) {
             </Row>
           </CardContent>
         </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>About and updates</CardTitle>
+            <CardDescription>Bridge looks for a new version on GitHub when it starts and a few times a day.</CardDescription>
+          </CardHeader>
+          <CardContent className="divide-y">
+            <Row title={`Bridge ${update.current}`} description={updateText(update)}>
+              {update.state === 'available' || (update.state === 'error' && update.update) ? (
+                <Button size="sm" onClick={() => run(() => api.installUpdate())}>
+                  Install {update.update!.version}
+                </Button>
+              ) : (
+                <Button variant="outline" size="sm" disabled={['checking', 'downloading', 'installing'].includes(update.state)} onClick={() => run(() => api.checkUpdate())}>
+                  {update.state === 'checking' && <LoaderCircle className="animate-spin" />}
+                  Check for updates
+                </Button>
+              )}
+            </Row>
+          </CardContent>
+        </Card>
       </div>
 
       {dirty && (
@@ -108,6 +143,25 @@ export function SettingsPage({ state, run }: PageProps) {
       )}
     </div>
   )
+}
+
+function updateText(u: UpdateStatus): string {
+  switch (u.state) {
+    case 'checking':
+      return 'Checking for updates…'
+    case 'latest':
+      return `You have the latest version (checked ${u.checkedAt ? ago(u.checkedAt) : 'just now'}).`
+    case 'available':
+      return `Bridge ${u.update!.version} is available. Installing closes Bridge for a moment and opens it again; your servers and settings stay.`
+    case 'downloading':
+      return `Downloading Bridge ${u.update!.version}… ${Math.round((u.progress ?? 0) * 100)}%`
+    case 'installing':
+      return 'Installing; Bridge will reopen by itself.'
+    case 'error':
+      return u.error || 'Could not check for updates.'
+    default:
+      return 'Not checked yet.'
+  }
 }
 
 function Row({ title, description, children }: { title: string; description: string; children: ReactNode }) {

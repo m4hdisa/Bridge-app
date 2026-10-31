@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { describeLink, extractLinks, parseLink } from '../src/main/parser'
 import { buildConfig, buildTestConfig } from '../src/main/config'
 import { usageFromNames } from '../src/main/subscription'
+import { isNewer } from '../src/shared/version'
 import type { AppRule, ConnectionMode, Settings } from '../src/shared/types'
 
 const root = join(__dirname, '..')
@@ -36,6 +37,8 @@ const SAMPLES: Record<string, string> = {
 
 const settings: Settings = {
   mode: 'tun',
+  autoPing: false,
+  autoServer: false,
   bypassIran: true,
   mixedPort: 2080,
   testUrl: 'https://www.gstatic.com/generate_204',
@@ -161,6 +164,21 @@ for (const [label, links, gb, days] of nameCases) {
   const gotDays = u?.expire ? Math.ceil((u.expire * 1000 - Date.now()) / 86400000) : undefined
   if (gotGb === gb && gotDays === days) ok(label)
   else fail(label, `got ${gotGb} GB / ${gotDays} days`)
+}
+
+console.log('\nUpdate version comparison')
+const versionCases: [string, string, boolean][] = [
+  ['0.3.4', '0.3.3', true],
+  ['v0.4.0', '0.3.10', true],
+  ['0.3.10', '0.3.9', true],
+  ['1.0.0', '0.99.99', true],
+  ['0.3.3', '0.3.3', false],
+  ['0.3.2', '0.3.3', false],
+  ['v0.3.3', '0.3.3', false]
+]
+for (const [a, b, want] of versionCases) {
+  if (isNewer(a, b) === want) ok(`${a} ${want ? '>' : 'not >'} ${b}`)
+  else fail(`${a} vs ${b}`, `expected ${want}`)
 }
 
 rmSync(dir, { recursive: true, force: true })

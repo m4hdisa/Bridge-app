@@ -39,7 +39,11 @@ export function Servers({ state, run }: PageProps) {
     <>
       <PageHeader
         title="Servers"
-        description="Subscriptions and configs. The highlighted server is the one Bridge connects to."
+        description={
+          state.settings.autoServer
+            ? "Auto is on: Bridge uses the server with the best ping (highlighted). Picking a server here turns Auto off."
+            : "Subscriptions and configs. The highlighted server is the one Bridge connects to."
+        }
         actions={
           <>
             <Button variant="outline" disabled={!!testing || !state.servers.length} onClick={() => test('all')}>

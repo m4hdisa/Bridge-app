@@ -1,6 +1,6 @@
 // Fake backend so the UI can run in a normal browser (npm run dev:ui).
 // Nothing here touches the network or the system.
-import type { AppState, BridgeApi, CoreStatus, LogLine, TrafficStats } from '../../shared/types'
+import type { AppState, BridgeApi, CoreStatus, LogLine, TrafficStats, UpdateStatus } from '../../shared/types'
 
 type Listener<T> = (v: T) => void
 
@@ -33,11 +33,22 @@ export function createMockBridge(): BridgeApi {
       { id: 'r2', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
       { id: 'r3', name: 'steam.exe', path: 'C:\\Program Files (x86)\\Steam\\steam.exe', action: 'direct', enabled: false }
     ],
-    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info' }
+    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info', autoPing: true, autoServer: false }
   }
   let status: CoreStatus = { state: 'stopped' }
   const logs: LogLine[] = [{ time: Date.now(), level: 'info', text: 'Mock backend: running in the browser, nothing is real.' }]
-  const listeners = { state: new Set<Listener<AppState>>(), status: new Set<Listener<CoreStatus>>(), stats: new Set<Listener<TrafficStats>>(), log: new Set<Listener<LogLine>>() }
+  const listeners = { state: new Set<Listener<AppState>>(), status: new Set<Listener<CoreStatus>>(), stats: new Set<Listener<TrafficStats>>(), log: new Set<Listener<LogLine>>(), update: new Set<Listener<UpdateStatus>>() }
+  // Starts on the latest version; Check for updates then pretends a newer one is out.
+  let update: UpdateStatus = {
+    state: 'latest',
+    current: '0.3.3',
+    checkedAt: Date.now(),
+    update: { version: '0.4.0', title: 'Bridge 0.4.0', notes: '', pageUrl: 'https://github.com/m4hdisa/Bridge-app/releases', installerUrl: 'https://example.com/Bridge.Setup.0.4.0.exe' }
+  }
+  const setUpdate = (u: UpdateStatus) => {
+    update = u
+    listeners.update.forEach((l) => l(u))
+  }
   let timer: ReturnType<typeof setInterval> | undefined
   let total = { up: 0, down: 0 }
 
@@ -73,7 +84,11 @@ export function createMockBridge(): BridgeApi {
       emitState()
     },
     selectServer: async (id) => {
-      state.selectedServerId = id
+      state.settings.autoServer = id === 'auto'
+      if (id === 'auto') {
+        const best = state.servers.filter((s) => (s.latency ?? -1) >= 0).sort((a, b) => a.latency! - b.latency!)[0]
+        if (best) state.selectedServerId = best.id
+      } else state.selectedServerId = id
       emitState()
     },
     testLatency: async () => {
@@ -166,6 +181,21 @@ export function createMockBridge(): BridgeApi {
     onState: sub(listeners.state),
     onStatus: sub(listeners.status),
     onStats: sub(listeners.stats),
-    onLogs: (cb) => sub(listeners.log)((l) => cb([l]))
+    onLogs: (cb) => sub(listeners.log)((l) => cb([l])),
+    getUpdate: async () => update,
+    checkUpdate: async () => {
+      setUpdate({ ...update, state: 'checking' })
+      await wait(800)
+      setUpdate({ ...update, state: 'available', checkedAt: Date.now() })
+    },
+    installUpdate: async () => {
+      for (let p = 0; p <= 1; p += 0.1) {
+        setUpdate({ ...update, state: 'downloading', progress: p })
+        await wait(250)
+      }
+      setUpdate({ ...update, state: 'installing', progress: 1 })
+    },
+    openUpdatePage: async () => undefined,
+    onUpdate: sub(listeners.update)
   }
 }

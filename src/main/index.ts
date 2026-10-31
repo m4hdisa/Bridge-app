@@ -7,8 +7,9 @@ import { describeLink, extractLinks, parseLink } from './parser'
 import { Store } from './store'
 import { fetchSubscription } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
-import { usesTun } from '../shared/types'
-import type { AppRule, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig } from '../shared/types'
+import { checkForUpdate, downloadInstaller, runInstaller } from './updater'
+import { AUTO_SERVER, usesTun } from '../shared/types'
+import type { AppRule, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, UpdateStatus } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
 
@@ -40,6 +41,7 @@ let exitLookedUpFor: number | undefined
 core.on('status', (s) => {
   send('status', s)
   updateTray()
+  watchHealth(s)
   if (s.state === 'running' && s.startedAt && s.startedAt !== exitLookedUpFor && core.probePort) {
     exitLookedUpFor = s.startedAt
     const port = core.probePort
@@ -95,6 +97,12 @@ function parseLinks(links: string[], keep = new Map<string, ServerProfile>()): {
 
 function importResult(added: number, skipped: SkippedConfig[]): ImportResult {
   return { added, errors: skipped.map((s) => `${s.name}: ${s.reason}`) }
+}
+
+/** Passes a result through, pinging the servers in the background when something was added. */
+function withAutoPing(result: ImportResult, reason: string): ImportResult {
+  if (result.added) autoPing(reason)
+  return result
 }
 
 function addLinks(links: string[]): ImportResult {
@@ -154,15 +162,154 @@ async function refreshDueSubscriptions(): Promise<void> {
   }
 }
 
+// ---------- auto ping / best server ----------
+
+const AUTO_PING_EVERY_MS = 10 * 60_000
+/** Ping results younger than this are trusted when Auto picks a server. */
+const PING_FRESH_MS = 3 * 60_000
+let pingRun: Promise<void> | undefined
+let lastPingAt = 0
+
+/** Tests every server's latency and saves the results. Overlapping calls share one run. */
+function pingAll(reason: string): Promise<void> {
+  pingRun ??= (async () => {
+    if (!store.state.servers.length) return
+    core.log(`Testing all servers (${reason})`)
+    const results = await core.testLatency(store.state.servers, store.state.settings.testUrl)
+    store.update((s) => {
+      for (const server of s.servers) if (results.has(server.id)) server.latency = results.get(server.id)
+    })
+    lastPingAt = Date.now()
+    pushState()
+  })().finally(() => (pingRun = undefined))
+  return pingRun
+}
+
+/** Background ping, when the user has it on (Settings, "Ping servers automatically"). */
+function autoPing(reason: string): void {
+  if (store.state.settings.autoPing) void pingAll(reason).catch((e) => core.log(`Auto ping failed: ${e instanceof Error ? e.message : e}`, 'warn'))
+}
+
+/** The responding server with the lowest latency. */
+function bestServer(exclude?: string): ServerProfile | undefined {
+  return store.state.servers
+    .filter((s) => s.id !== exclude && s.latency !== undefined && s.latency >= 0)
+    .sort((a, b) => a.latency! - b.latency!)[0]
+}
+
+/** Auto: selects the best-ping server, pinging first unless the last results are fresh. */
+async function pickBestServer(): Promise<void> {
+  if (Date.now() - lastPingAt > PING_FRESH_MS || !bestServer()) await pingAll('choosing the best server')
+  const best = bestServer()
+  if (!best) throw new Error('Auto: no server answered the ping test. Check your internet, or pick a server yourself.')
+  if (best.id !== store.state.selectedServerId) {
+    store.update((s) => (s.selectedServerId = best.id))
+    pushState()
+  }
+  core.log(`Auto: using ${best.name} (${best.latency} ms)`)
+}
+
+// Auto failover: after two failed health checks in a row (about 40 s), ping everything and
+// move to the best other server. A slightly faster server alone is no reason to switch,
+// because switching drops open connections.
+let failedChecks = 0
+let lastCheckAt = 0
+let failingOver = false
+function watchHealth(s: CoreStatus): void {
+  const h = s.health?.server
+  if (s.state !== 'running') {
+    failedChecks = 0
+    return
+  }
+  if (!h || h.checkedAt === lastCheckAt) return
+  lastCheckAt = h.checkedAt
+  failedChecks = h.ok ? 0 : failedChecks + 1
+  if (failedChecks < 2 || failingOver || !store.state.settings.autoServer) return
+  failingOver = true
+  void (async () => {
+    const current = store.state.selectedServerId
+    core.log('Auto: the server stopped responding, looking for another one', 'warn')
+    await pingAll('server stopped responding')
+    if ((store.state.servers.find((x) => x.id === current)?.latency ?? -1) >= 0) return core.log('Auto: the server responds again, staying on it')
+    const best = bestServer(current)
+    if (!best) return core.log('Auto: no other server responds either, staying on the current one', 'warn')
+    store.update((st) => (st.selectedServerId = best.id))
+    pushState()
+    core.log(`Auto: switching to ${best.name} (${best.latency} ms)`)
+    await core.start(best, store.state.settings, store.state.appRules)
+  })()
+    .catch((e) => core.log(`Auto: switching failed: ${e instanceof Error ? e.message : e}`, 'error'))
+    .finally(() => {
+      failingOver = false
+      failedChecks = 0
+    })
+}
+
+// ---------- updates ----------
+
+const UPDATE_CHECK_EVERY_MS = 6 * 3600_000
+const RELEASES_PAGE = 'https://github.com/m4hdisa/Bridge-app/releases/latest'
+let update: UpdateStatus = { state: 'idle', current: app.getVersion() }
+
+function setUpdate(u: UpdateStatus): void {
+  update = u
+  send('update', u)
+}
+
+/** Background checks stay quiet on failure (no internet, GitHub blocked); the UI check shows the error. */
+async function checkUpdate(quiet: boolean): Promise<void> {
+  if (['checking', 'downloading', 'installing'].includes(update.state)) return
+  const before = update
+  setUpdate({ ...update, state: 'checking', error: undefined })
+  try {
+    const result = await checkForUpdate()
+    if (result.update && result.update.version !== before.update?.version) core.log(`Bridge ${result.update.version} is available (this is ${result.current})`)
+    setUpdate(result)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    core.log(`Update check failed: ${msg}`, 'warn')
+    setUpdate(quiet ? before : { ...before, state: 'error', error: `Could not check for updates: ${msg}` })
+  }
+}
+
+async function installUpdate(): Promise<void> {
+  const u = update.update
+  if (update.state !== 'available' && update.state !== 'error') return
+  if (!u?.installerUrl) {
+    await shell.openExternal(u?.pageUrl ?? RELEASES_PAGE)
+    return
+  }
+  setUpdate({ ...update, state: 'downloading', progress: 0, error: undefined })
+  let file: string
+  let shown = 0
+  try {
+    file = await downloadInstaller(u.installerUrl, (p) => {
+      // One message per percent is plenty for a progress bar.
+      if (p - shown >= 0.01) setUpdate({ ...update, progress: (shown = p) })
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    setUpdate({ ...update, state: 'error', error: `Update download failed: ${msg}` })
+    throw new Error(`Update download failed: ${msg}`)
+  }
+  setUpdate({ ...update, state: 'installing', progress: 1 })
+  core.log(`Installing Bridge ${u.version}; Bridge restarts when it's done`)
+  await core.stop()
+  runInstaller(file)
+  quitting = true
+  app.quit()
+}
+
 // ---------- connect ----------
 
 async function connect(): Promise<void> {
-  const { servers, selectedServerId, settings, appRules } = store.state
-  const server = servers.find((s) => s.id === selectedServerId)
-  if (!server) throw new Error('Select a server first')
+  const { settings, appRules } = store.state
   if (usesTun(settings.mode) && !(await isAdmin())) {
     throw new Error('VPN (TUN) and Per-App modes need administrator rights. Use "Restart as admin".')
   }
+  if (settings.autoServer) await pickBestServer()
+  const server = store.state.servers.find((s) => s.id === store.state.selectedServerId)
+  if (!server) throw new Error('Select a server first')
   await core.start(server, settings, appRules)
 }
 
@@ -193,8 +340,8 @@ handle('getState', () => store.state)
 handle('getStatus', () => core.status)
 handle('getLogs', () => core.logs)
 
-handle('importText', (text: string) => addLinks(extractLinks(text)))
-handle('importClipboard', () => addLinks(extractLinks(clipboard.readText())))
+handle('importText', (text: string) => withAutoPing(addLinks(extractLinks(text)), 'new servers'))
+handle('importClipboard', () => withAutoPing(addLinks(extractLinks(clipboard.readText())), 'new servers'))
 handle('removeServer', (id: string) => {
   store.update((s) => {
     s.servers = s.servers.filter((x) => x.id !== id)
@@ -203,9 +350,17 @@ handle('removeServer', (id: string) => {
   pushState()
 })
 handle('selectServer', async (id: string) => {
-  store.update((s) => (s.selectedServerId = id))
+  const auto = id === AUTO_SERVER
+  const before = store.state.selectedServerId
+  store.update((s) => {
+    s.settings.autoServer = auto
+    if (!auto) s.selectedServerId = id
+  })
   pushState()
-  await reconnectIfRunning()
+  if (core.status.state !== 'running') return
+  if (auto) await pickBestServer()
+  // Reconnect only if the server actually changed.
+  if (store.state.selectedServerId !== before) await connect()
 })
 handle('setServerEngine', async (id: string, engine: Engine) => {
   const server = store.state.servers.find((s) => s.id === id)
@@ -225,6 +380,7 @@ handle('testLatency', async (ids?: string[]) => {
   store.update((s) => {
     for (const server of s.servers) if (results.has(server.id)) server.latency = results.get(server.id)
   })
+  if (!ids) lastPingAt = Date.now()
   pushState()
 })
 
@@ -233,9 +389,9 @@ handle('addSubscription', async (name: string, url: string) => {
   // An empty name is filled from the panel's own title on the first update.
   store.update((s) => s.subscriptions.push({ id, name, url }))
   pushState()
-  return refreshSubscription(id)
+  return withAutoPing(await refreshSubscription(id), 'subscription added')
 })
-handle('updateSubscription', (id: string) => refreshSubscription(id))
+handle('updateSubscription', async (id: string) => withAutoPing(await refreshSubscription(id), 'subscription updated'))
 handle('removeSubscription', (id: string) => {
   store.update((s) => {
     s.subscriptions = s.subscriptions.filter((x) => x.id !== id)
@@ -246,10 +402,14 @@ handle('removeSubscription', (id: string) => {
 })
 
 handle('updateSettings', async (patch: Partial<Settings>) => {
-  const before = JSON.stringify(store.state.settings)
+  // Auto ping and Auto server don't change the running connection.
+  const connectionPart = ({ autoPing: _p, autoServer: _a, ...rest }: Settings) => JSON.stringify(rest)
+  const before = connectionPart(store.state.settings)
+  const pingWasOn = store.state.settings.autoPing
   store.update((s) => Object.assign(s.settings, patch))
   pushState()
-  if (JSON.stringify(store.state.settings) !== before) await reconnectIfRunning()
+  if (!pingWasOn) autoPing('turned on')
+  if (connectionPart(store.state.settings) !== before) await reconnectIfRunning()
 })
 
 // App rule changes are applied live (no core restart, so the connection never drops).
@@ -278,6 +438,11 @@ handle('pickExe', async () => {
   const path = r.filePaths[0]
   return withIcon({ name: path.split('\\').pop()!, path })
 })
+
+handle('getUpdate', () => update)
+handle('checkUpdate', () => checkUpdate(false))
+handle('installUpdate', () => installUpdate())
+handle('openUpdatePage', () => shell.openExternal(update.update?.pageUrl ?? RELEASES_PAGE))
 
 handle('connect', () => connect())
 handle('disconnect', () => core.stop())
@@ -358,9 +523,13 @@ app.whenReady().then(async () => {
   tray = new Tray(nativeImage.createFromPath(iconPath()).resize({ width: 16, height: 16 }))
   tray.on('click', showWindow)
   updateTray()
-  // Keep subscriptions (configs, usage, expiry) current without the user pressing Update.
-  setTimeout(() => void refreshDueSubscriptions(), 10_000)
-  setInterval(() => void refreshDueSubscriptions(), 10 * 60_000)
+  // Keep subscriptions (configs, usage, expiry) and every server's ping current without the
+  // user pressing Update or Test.
+  setTimeout(() => void refreshDueSubscriptions().then(() => autoPing('startup')), 10_000)
+  setInterval(() => void refreshDueSubscriptions().then(() => autoPing('every 10 minutes')), AUTO_PING_EVERY_MS)
+  // Look for a new Bridge shortly after start and then a few times a day.
+  setTimeout(() => void checkUpdate(true), 20_000)
+  setInterval(() => void checkUpdate(true), UPDATE_CHECK_EVERY_MS)
 })
 
 app.on('before-quit', (e) => {

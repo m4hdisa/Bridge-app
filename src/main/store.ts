@@ -11,7 +11,9 @@ export const DEFAULT_SETTINGS: Settings = {
   testUrl: 'https://www.gstatic.com/generate_204',
   strictRoute: false,
   dnsMode: 'real',
-  logLevel: 'info'
+  logLevel: 'info',
+  autoPing: true,
+  autoServer: false
 }
 
 export class Store {

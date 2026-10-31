@@ -111,7 +111,17 @@ export interface Settings {
    */
   dnsMode: 'real' | 'fakeip'
   logLevel: 'debug' | 'info' | 'warn' | 'error'
+  /** Ping every server on its own: at startup, after subscription updates and every 10 minutes. */
+  autoPing: boolean
+  /**
+   * "Auto (best ping)": connect to the server with the lowest ping, and move to the best other
+   * server if the current one stops responding. Chosen with selectServer(AUTO_SERVER).
+   */
+  autoServer: boolean
 }
+
+/** Server id the UI passes to selectServer() to turn on Auto (best ping). */
+export const AUTO_SERVER = 'auto'
 
 export interface AppState {
   servers: ServerProfile[]
@@ -202,6 +212,18 @@ export interface ImportResult {
 }
 
 /** The API the preload script exposes to the UI as `window.bridge`. */
+/** Bridge's own updates, from GitHub Releases. */
+export interface UpdateStatus {
+  state: 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'installing' | 'error'
+  /** This build's version. */
+  current: string
+  checkedAt?: number
+  update?: { version: string; title: string; notes: string; pageUrl: string; installerUrl?: string; size?: number }
+  /** Download progress, 0 to 1. */
+  progress?: number
+  error?: string
+}
+
 export interface BridgeApi {
   getState(): Promise<AppState>
   getStatus(): Promise<CoreStatus>
@@ -239,4 +261,11 @@ export interface BridgeApi {
   onStats(cb: (stats: TrafficStats) => void): () => void
   /** New log lines, delivered in batches (a few times a second) to keep the UI light under heavy traffic. */
   onLogs(cb: (lines: LogLine[]) => void): () => void
+  getUpdate(): Promise<UpdateStatus>
+  /** Asks GitHub for a newer version now. */
+  checkUpdate(): Promise<void>
+  /** Downloads the new installer, closes Bridge and installs it; Bridge starts again afterwards. */
+  installUpdate(): Promise<void>
+  openUpdatePage(): Promise<void>
+  onUpdate(cb: (u: UpdateStatus) => void): () => void
 }

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppWindow, ArrowDown, ArrowUp, Gauge, ScrollText, Server, Settings as SettingsIcon } from 'lucide-react'
+import { AppWindow, ArrowDown, ArrowUp, Download, Gauge, ScrollText, Server, Settings as SettingsIcon } from 'lucide-react'
 import { toast } from 'sonner'
-import type { AppState, CoreStatus, LogLine, TrafficStats } from '../../shared/types'
+import type { AppState, CoreStatus, LogLine, TrafficStats, UpdateStatus } from '../../shared/types'
 import { errorMessage, speed } from './format'
 import { cn } from '@/lib/utils'
 import { Flag, StatusDot, type Tone } from '@/components/common'
 import { Toaster } from '@/components/ui/misc'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Home } from './pages/Home'
 import { Servers } from './pages/Servers'
@@ -22,6 +24,7 @@ export interface PageProps {
   status: CoreStatus
   stats?: TrafficStats
   logs: LogLine[]
+  update: UpdateStatus
   /** Runs an action; shows its error, or the success message if given, as a toast. */
   run: <T>(fn: () => Promise<T>, success?: (r: T) => string | undefined) => Promise<void>
   go: (page: Page) => void
@@ -52,11 +55,13 @@ export function App() {
   const [status, setStatus] = useState<CoreStatus>({ state: 'stopped' })
   const [stats, setStats] = useState<TrafficStats>()
   const [logs, setLogs] = useState<LogLine[]>([])
+  const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle', current: '' })
 
   useEffect(() => {
     void api.getState().then(setState)
     void api.getStatus().then(setStatus)
     void api.getLogs().then(setLogs)
+    void api.getUpdate().then(setUpdate)
     const offs = [
       api.onState(setState),
       api.onStatus((s) => {
@@ -65,7 +70,8 @@ export function App() {
         if (s.error) toast.error(s.error)
       }),
       api.onStats(setStats),
-      api.onLogs((lines) => setLogs((prev) => [...prev, ...lines].slice(-1000)))
+      api.onLogs((lines) => setLogs((prev) => [...prev, ...lines].slice(-1000))),
+      api.onUpdate(setUpdate)
     ]
     return () => offs.forEach((off) => off())
   }, [])
@@ -82,7 +88,7 @@ export function App() {
 
   if (!state) return <div className="text-muted-foreground p-10">Loading…</div>
 
-  const props: PageProps = { state, status, stats, logs, run, go: setPage }
+  const props: PageProps = { state, status, stats, logs, update, run, go: setPage }
   const summary = connectionSummary(status)
   const server = state.servers.find((s) => s.id === (status.serverId ?? state.selectedServerId))
 
@@ -116,31 +122,34 @@ export function App() {
             ))}
           </nav>
 
-          <button
-            onClick={() => setPage('home')}
-            className="bg-card hover:border-primary/40 mt-auto flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-left transition-colors"
-          >
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <StatusDot tone={summary.tone} pulse={summary.tone === 'primary'} />
-              {summary.label}
-            </div>
-            <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
-              {status.state === 'running' && status.exit && <Flag code={status.exit.countryCode} className="h-3 w-4" />}
-              <span className="truncate">{status.state === 'running' && status.exit ? `${status.exit.country} · ${server?.name ?? ''}` : server ? server.name : 'No server selected'}</span>
-            </div>
-            {status.state === 'running' && (
-              <div className="tabular mt-1.5 grid grid-cols-2 gap-2 border-t pt-2 text-xs">
-                <span className="flex items-center gap-1" title="Download speed">
-                  <ArrowDown className="text-primary size-3.5" />
-                  {stats ? speed(stats.downSpeed) : '—'}
-                </span>
-                <span className="flex items-center gap-1" title="Upload speed">
-                  <ArrowUp className="text-muted-foreground size-3.5" />
-                  {stats ? speed(stats.upSpeed) : '—'}
-                </span>
+          <div className="mt-auto flex flex-col gap-2">
+            <UpdateCard update={update} run={run} />
+            <button
+              onClick={() => setPage('home')}
+              className="bg-card hover:border-primary/40 flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-left transition-colors"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <StatusDot tone={summary.tone} pulse={summary.tone === 'primary'} />
+                {summary.label}
               </div>
-            )}
-          </button>
+              <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
+                {status.state === 'running' && status.exit && <Flag code={status.exit.countryCode} className="h-3 w-4" />}
+                <span className="truncate">{status.state === 'running' && status.exit ? `${status.exit.country} · ${server?.name ?? ''}` : server ? server.name : 'No server selected'}</span>
+              </div>
+              {status.state === 'running' && (
+                <div className="tabular mt-1.5 grid grid-cols-2 gap-2 border-t pt-2 text-xs">
+                  <span className="flex items-center gap-1" title="Download speed">
+                    <ArrowDown className="text-primary size-3.5" />
+                    {stats ? speed(stats.downSpeed) : '—'}
+                  </span>
+                  <span className="flex items-center gap-1" title="Upload speed">
+                    <ArrowUp className="text-muted-foreground size-3.5" />
+                    {stats ? speed(stats.upSpeed) : '—'}
+                  </span>
+                </div>
+              )}
+            </button>
+          </div>
         </aside>
 
         <main className="min-w-0 flex-1 overflow-y-auto">
@@ -155,6 +164,37 @@ export function App() {
       </div>
       <Toaster />
     </TooltipProvider>
+  )
+}
+
+/** Shown in the sidebar while a new Bridge version is available, downloading or installing. */
+function UpdateCard({ update, run }: { update: UpdateStatus; run: PageProps['run'] }) {
+  const u = update.update
+  if (!u || !['available', 'downloading', 'installing'].includes(update.state)) return null
+  const pct = Math.round((update.progress ?? 0) * 100)
+  return (
+    <div className="border-primary/30 bg-primary/8 rounded-lg border p-3 text-xs">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Download className="text-primary size-4" />
+        Update available
+      </div>
+      <div className="text-muted-foreground mt-0.5 flex items-center justify-between gap-2">
+        <span>Bridge {u.version}</span>
+        <button className="hover:text-primary cursor-pointer underline-offset-2 hover:underline" onClick={() => run(() => api.openUpdatePage())}>
+          What's new
+        </button>
+      </div>
+      {update.state === 'available' ? (
+        <Button size="sm" className="mt-2.5 w-full" onClick={() => run(() => api.installUpdate())}>
+          Install and restart
+        </Button>
+      ) : (
+        <>
+          <Progress value={pct} className="mt-2.5" />
+          <div className="text-muted-foreground tabular mt-1.5">{update.state === 'installing' ? 'Installing, Bridge will reopen…' : `Downloading… ${pct}%`}</div>
+        </>
+      )}
+    </div>
   )
 }
 

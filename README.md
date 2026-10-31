@@ -23,7 +23,9 @@ Per-App and Full VPN modes need administrator rights. Bridge offers a "Restart a
 - **Subscriptions:** shows traffic left, days left and config count, and updates automatically. When a panel doesn't send usage headers, Bridge reads usage from the config names.
 - **Works next to other VPN tools:** detects other tunnels (WARP, game VPNs) and keeps out of their way.
 - **Iranian sites go direct** (`.ir` and the Iran geoip/geosite lists).
+- **Auto server:** pings every server in the background. **Auto (best ping)** connects to the fastest one and moves to another if it stops responding.
 - **Live status:** real latency tests, health checks, VPN exit location with flag, live speed and per-app traffic.
+- **Updates:** Bridge checks this repository's releases and installs a new version in one click.
 
 | Servers | Apps |
 |---|---|

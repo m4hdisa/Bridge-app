@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Activity, AppWindow, Copy, Globe, MonitorCog, Plug, Plus, Power, RefreshCw, ShieldAlert, Split, TriangleAlert, Wifi } from 'lucide-react'
-import { usesTun, type AppRule, type ConnectionMode, type CoreStatus, type HealthCheck, type ServerProfile } from '../../../shared/types'
+import { Activity, AppWindow, ArrowDown, ArrowUp, Copy, Globe, MonitorCog, Plug, Plus, Power, RefreshCw, ShieldAlert, Split, TriangleAlert, Wifi, Zap } from 'lucide-react'
+import { AUTO_SERVER, usesTun, type AppRule, type ConnectionMode, type CoreStatus, type HealthCheck, type ServerProfile } from '../../../shared/types'
 import { api, connectionSummary, type PageProps } from '../App'
-import { ago, bytes, duration } from '../format'
+import { ago, bytes, duration, speed } from '../format'
 import { cn } from '@/lib/utils'
 import { AppIcon, EmptyState, Flag, LatencyPill, RouteBadge, StatusDot } from '@/components/common'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/misc'
@@ -55,88 +55,105 @@ export function Home({ state, status, stats, run, go }: PageProps) {
           </Alert>
         )}
 
-        {/* Connection hero: no box, the power button is the center of the page. */}
-        <section className="relative flex flex-col items-center gap-6 pt-6 pb-4 text-center">
-          <PowerButton
-            status={status}
-            disabled={busy || (!running && (!server || needsAdmin))}
-            onClick={() => run(() => (running ? api.disconnect() : api.connect()))}
-          />
-
-          <div>
-            <div className="flex items-center justify-center gap-2.5">
-              <StatusDot tone={summary.tone} pulse={busy} />
-              <span className="text-3xl font-semibold tracking-tight">{summary.label}</span>
-            </div>
-            <div className="text-muted-foreground mt-2 text-sm">
-              {running && status.startedAt ? (
-                <span className="tabular">Connected for {duration(Date.now() - status.startedAt)}</span>
-              ) : (
-                <span>{server ? 'Press the button to connect' : 'Add a server to get started'}</span>
-              )}
-            </div>
-            {running && (
-              <div className="bg-card/70 mx-auto mt-4 flex w-fit items-center gap-2.5 rounded-full border py-1.5 pr-4 pl-2.5 text-sm">
-                {status.exit ? (
-                  <>
-                    <Flag code={status.exit.countryCode} className="h-4 w-6" />
-                    <span className="font-medium">{status.exit.country}</span>
-                    {status.exit.city && <span className="text-muted-foreground">{status.exit.city}</span>}
-                    <span className="text-muted-foreground font-mono text-xs">{status.exit.ip}</span>
-                  </>
-                ) : (
-                  <>
-                    <Globe className="text-muted-foreground size-4 animate-pulse" />
-                    <span className="text-muted-foreground">Finding your VPN location…</span>
-                  </>
+        {/* Connection hero, no box: the big power button with the status and key numbers under it
+            on the left, the controls on the right. Columns follow the space the page really has (a
+            container query), not the window size, and stack when it gets narrow. */}
+        <section className="@container pt-4 pb-4">
+          <div className="grid items-center gap-8 @min-[640px]:grid-cols-[20rem_minmax(0,1fr)] @min-[640px]:gap-8">
+            <div className="flex min-w-0 flex-col items-center gap-4 text-center">
+              <PowerButton
+                status={status}
+                disabled={busy || (!running && (!server || needsAdmin))}
+                onClick={() => run(() => (running ? api.disconnect() : api.connect()))}
+              />
+              <div className="w-full min-w-0">
+                <div className="flex items-center justify-center gap-2.5">
+                  <StatusDot tone={summary.tone} pulse={busy} />
+                  <span className="text-3xl font-semibold tracking-tight">{summary.label}</span>
+                </div>
+                <div className="text-muted-foreground mt-1.5 text-sm">
+                  {running && status.startedAt ? (
+                    <span className="tabular">Connected for {duration(Date.now() - status.startedAt)}</span>
+                  ) : (
+                    <span>{server ? 'Press the button to connect' : 'Add a server to get started'}</span>
+                  )}
+                </div>
+                {running && (
+                  <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                    <div className="bg-card/70 flex w-fit max-w-full items-center gap-2.5 rounded-full border py-1.5 pr-4 pl-2.5 text-sm whitespace-nowrap">
+                      {status.exit ? (
+                        <>
+                          <Flag code={status.exit.countryCode} className="h-4 w-6 shrink-0" />
+                          <span className="font-medium">{status.exit.country}</span>
+                          {status.exit.city && <span className="text-muted-foreground min-w-0 truncate">{status.exit.city}</span>}
+                          <span className="text-muted-foreground font-mono text-xs">{status.exit.ip}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Globe className="text-muted-foreground size-4 animate-pulse" />
+                          <span className="text-muted-foreground">Finding your VPN location…</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="bg-card/70 tabular flex items-center gap-3 rounded-full border px-3.5 py-1.5 text-sm whitespace-nowrap">
+                      <span className="flex items-center gap-1">
+                        <ArrowDown className="text-primary size-3.5" />
+                        {stats ? speed(stats.downSpeed) : '—'}
+                      </span>
+                      <span className="text-muted-foreground flex items-center gap-1">
+                        <ArrowUp className="size-3.5" />
+                        {stats ? speed(stats.upSpeed) : '—'}
+                      </span>
+                    </div>
+                  </div>
                 )}
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* Controls: one column, one width, each with a small label, read top to bottom. */}
-          <div className="mt-2 flex w-full max-w-xl flex-col gap-6 text-left">
-            <ControlSection label="Mode">
-              <ToggleGroup type="single" value={mode.id} onValueChange={(v) => v && run(() => api.updateSettings({ mode: v as ConnectionMode }))} className="w-full p-1">
-                {MODES.map(({ id, label, icon: Icon }) => (
-                  <ToggleGroupItem key={id} value={id} className="h-9 flex-1">
-                    <Icon />
-                    {label}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-              <p className="text-muted-foreground mt-2 text-xs leading-relaxed">{mode.help}</p>
-            </ControlSection>
-
-            <ControlSection
-              label="Server"
-              action={
-                <button className="text-muted-foreground hover:text-primary cursor-pointer text-xs font-medium" onClick={() => go('servers')}>
-                  Manage servers →
-                </button>
-              }
-            >
-              <ServerPicker servers={state.servers} subscriptions={state.subscriptions} value={state.selectedServerId} onChange={(id) => run(() => api.selectServer(id))} onManage={() => go('servers')} />
-            </ControlSection>
-
-            {state.settings.mode === 'per-app' && (
-              <ControlSection label="Apps on VPN">
-                <VpnAppsCard rules={state.appRules} onAdd={() => go('apps')} />
+            {/* Controls: one column, each with a small label, read top to bottom. */}
+            <div className="mx-auto flex w-full max-w-xl flex-col gap-6 text-left">
+              <ControlSection label="Mode">
+                <ToggleGroup type="single" value={mode.id} onValueChange={(v) => v && run(() => api.updateSettings({ mode: v as ConnectionMode }))} className="grid w-full grid-cols-4 gap-1 p-1 @min-[640px]:grid-cols-2">
+                  {MODES.map(({ id, label, icon: Icon }) => (
+                    <ToggleGroupItem key={id} value={id} className="h-9 w-full">
+                      <Icon />
+                      {label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+                <p className="text-muted-foreground mt-2 text-xs leading-relaxed">{mode.help}</p>
               </ControlSection>
-            )}
 
-            <div className="text-muted-foreground flex items-center gap-1.5 border-t pt-4 text-xs">
-              <Plug className="size-3.5" />
-              <span>Local SOCKS5 / HTTP proxy</span>
-              <code className="bg-muted text-foreground ml-auto rounded px-1.5 py-0.5 font-mono">{proxyAddress}</code>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" className="size-6" onClick={() => run(() => navigator.clipboard.writeText(proxyAddress), () => `Copied ${proxyAddress}`)}>
-                    <Copy className="size-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Copy address</TooltipContent>
-              </Tooltip>
+              <ControlSection
+                label="Server"
+                action={
+                  <button className="text-muted-foreground hover:text-primary cursor-pointer text-xs font-medium" onClick={() => go('servers')}>
+                    Manage servers →
+                  </button>
+                }
+              >
+                <ServerPicker servers={state.servers} subscriptions={state.subscriptions} auto={state.settings.autoServer} selectedId={state.selectedServerId} onChange={(id) => run(() => api.selectServer(id))} onManage={() => go('servers')} />
+              </ControlSection>
+
+              {state.settings.mode === 'per-app' && (
+                <ControlSection label="Apps on VPN">
+                  <VpnAppsCard rules={state.appRules} onAdd={() => go('apps')} />
+                </ControlSection>
+              )}
+
+              <div className="text-muted-foreground flex items-center gap-1.5 border-t pt-4 text-xs">
+                <Plug className="size-3.5" />
+                <span>Local SOCKS5 / HTTP proxy</span>
+                <code className="bg-muted text-foreground ml-auto rounded px-1.5 py-0.5 font-mono">{proxyAddress}</code>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" className="size-6" onClick={() => run(() => navigator.clipboard.writeText(proxyAddress), () => `Copied ${proxyAddress}`)}>
+                      <Copy className="size-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Copy address</TooltipContent>
+                </Tooltip>
+              </div>
             </div>
           </div>
         </section>
@@ -201,7 +218,7 @@ function PowerButton({ status, disabled, onClick }: { status: CoreStatus; disabl
   const running = status.state === 'running'
   const busy = status.state === 'starting' || status.state === 'stopping'
   return (
-    <div className="relative flex size-72 items-center justify-center">
+    <div className="relative flex size-72 shrink-0 items-center justify-center">
       {/* Glow behind everything, only while connected. */}
       <div
         className={cn(
@@ -212,23 +229,23 @@ function PowerButton({ status, disabled, onClick }: { status: CoreStatus; disabl
       />
       {/* Concentric rings. */}
       <span className={cn('absolute size-72 rounded-full border transition-colors duration-700', running ? 'border-primary/15' : 'border-border/50')} />
-      <span className={cn('absolute size-60 rounded-full border transition-colors duration-700', running ? 'border-primary/25 animate-pulse' : 'border-border/70')} />
-      <span className={cn('absolute size-48 rounded-full border transition-colors duration-700', running ? 'border-primary/40' : 'border-border')} />
+      <span className={cn('absolute size-62 rounded-full border transition-colors duration-700', running ? 'border-primary/25 animate-pulse' : 'border-border/70')} />
+      <span className={cn('absolute size-52 rounded-full border transition-colors duration-700', running ? 'border-primary/40' : 'border-border')} />
       {/* Spinning arc while connecting / disconnecting. */}
-      {busy && <span className="border-t-primary border-r-primary/40 absolute size-48 animate-spin rounded-full border-2 border-transparent" />}
+      {busy && <span className="border-t-primary border-r-primary/40 absolute size-52 animate-spin rounded-full border-2 border-transparent" />}
 
       <button
         onClick={onClick}
         disabled={disabled}
         aria-label={running ? 'Disconnect' : 'Connect'}
         className={cn(
-          'group relative flex size-40 cursor-pointer flex-col items-center justify-center gap-2 rounded-full transition-all duration-300 outline-none focus-visible:ring-4 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50',
+          'group relative flex size-44 cursor-pointer flex-col items-center justify-center gap-2 rounded-full transition-all duration-300 outline-none focus-visible:ring-4 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50',
           running
             ? 'from-primary to-[oklch(0.62_0.19_40)] text-primary-foreground animate-halo bg-gradient-to-b'
             : 'bg-card text-muted-foreground hover:text-primary border shadow-[inset_0_2px_10px_oklch(0_0_0/0.5),0_10px_30px_-10px_oklch(0_0_0/0.8)] hover:border-primary/50'
         )}
       >
-        <Power className="size-12 transition-transform group-active:scale-90" strokeWidth={2.2} />
+        <Power className="size-14 transition-transform group-active:scale-90" strokeWidth={2.2} />
         <span className="text-xs font-semibold tracking-[0.18em] uppercase">
           {running ? 'Disconnect' : busy ? (status.state === 'starting' ? 'Connecting' : 'Stopping') : 'Connect'}
         </span>
@@ -284,13 +301,16 @@ function VpnAppsCard({ rules, onAdd }: { rules: AppRule[]; onAdd: () => void }) 
 function ServerPicker({
   servers,
   subscriptions,
-  value,
+  auto,
+  selectedId,
   onChange,
   onManage
 }: {
   servers: ServerProfile[]
   subscriptions: PageProps['state']['subscriptions']
-  value?: string
+  /** Auto (best ping) is on; selectedId is then the server it picked. */
+  auto: boolean
+  selectedId?: string
   onChange: (id: string) => void
   onManage: () => void
 }) {
@@ -305,13 +325,30 @@ function ServerPicker({
     ...subscriptions.map((s) => ({ label: s.name || 'Subscription', items: servers.filter((x) => x.subscriptionId === s.id) })),
     { label: 'Manual', items: servers.filter((x) => !x.subscriptionId) }
   ].filter((g) => g.items.length)
+  const picked = servers.find((s) => s.id === selectedId)
 
   return (
-    <Select value={value} onValueChange={onChange}>
+    <Select value={auto ? AUTO_SERVER : selectedId} onValueChange={onChange}>
       <SelectTrigger className="bg-card/70 h-12 w-full rounded-xl px-4">
         <SelectValue placeholder="Choose a server" />
       </SelectTrigger>
         <SelectContent>
+          <SelectGroup>
+            <SelectItem value={AUTO_SERVER}>
+              <span className="flex min-w-0 items-center gap-2">
+                <Zap className="text-primary size-4 shrink-0" />
+                <span className="font-medium">Auto</span>
+                {auto && picked ? (
+                  <>
+                    <span className="text-muted-foreground truncate">{picked.name}</span>
+                    <LatencyPill ms={picked.latency} />
+                  </>
+                ) : (
+                  <span className="text-muted-foreground truncate">Best ping, switches if a server fails</span>
+                )}
+              </span>
+            </SelectItem>
+          </SelectGroup>
           {groups.map((g) => (
             <SelectGroup key={g.label}>
               <SelectLabel>{g.label}</SelectLabel>

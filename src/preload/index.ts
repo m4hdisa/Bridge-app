@@ -37,7 +37,12 @@ const api: BridgeApi = {
   onState: subscribe('state'),
   onStatus: subscribe('status'),
   onStats: subscribe('stats'),
-  onLogs: subscribe('logs')
+  onLogs: subscribe('logs'),
+  getUpdate: invoke('getUpdate'),
+  checkUpdate: invoke('checkUpdate'),
+  installUpdate: invoke('installUpdate'),
+  openUpdatePage: invoke('openUpdatePage'),
+  onUpdate: subscribe('update')
 } as BridgeApi
 
 contextBridge.exposeInMainWorld('bridge', api)
