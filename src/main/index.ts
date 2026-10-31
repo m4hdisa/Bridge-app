@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shel
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Core } from './core'
+import { lookupExit } from './geo'
 import { describeLink, extractLinks, parseLink } from './parser'
 import { Store } from './store'
 import { fetchSubscription } from './subscription'
@@ -34,9 +35,24 @@ function pushState(): void {
   updateTray()
 }
 
+// Look up the VPN's exit location once per connection (keyed by its start time).
+let exitLookedUpFor: number | undefined
 core.on('status', (s) => {
   send('status', s)
   updateTray()
+  if (s.state === 'running' && s.startedAt && s.startedAt !== exitLookedUpFor && core.probePort) {
+    exitLookedUpFor = s.startedAt
+    const port = core.probePort
+    setTimeout(() => {
+      void lookupExit(port).then((exit) => {
+        if (core.status.startedAt !== s.startedAt) return
+        if (exit) {
+          core.log(`VPN exit: ${exit.ip} (${exit.city ? exit.city + ', ' : ''}${exit.country})`)
+          core.setExit(exit)
+        } else core.log('Could not look up the VPN exit location', 'warn')
+      })
+    }, 1000)
+  }
 })
 core.on('stats', (s) => send('stats', s))
 core.on('log', (l) => send('log', l))

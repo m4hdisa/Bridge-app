@@ -32,6 +32,11 @@ export interface BuildOptions {
   defaultInterface?: string
   /** Adapter of another VPN tool (e.g. "Ezconnect Virtual Adapter") for apps set to "Other VPN". */
   otherInterface?: string
+  /**
+   * Local SOCKS port whose traffic always goes through the VPN, whatever the mode or app
+   * rules. Bridge uses it for its own checks (e.g. looking up the VPN's exit location).
+   */
+  probePort?: number
 }
 
 type Json = Record<string, unknown>
@@ -121,6 +126,7 @@ export function buildConfig(o: BuildOptions): Json {
   const inbounds: Json[] = [
     { type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: settings.mixedPort }
   ]
+  if (o.probePort) inbounds.push({ type: 'socks', tag: 'probe-in', listen: '127.0.0.1', listen_port: o.probePort })
   if (useTun) {
     inbounds.unshift({
       type: 'tun',
@@ -143,6 +149,7 @@ export function buildConfig(o: BuildOptions): Json {
   const routeRules: Json[] = [
     { action: 'sniff' },
     { protocol: 'dns', action: 'hijack-dns' },
+    ...(o.probePort ? [{ inbound: ['probe-in'], outbound: 'proxy' }] : []),
     { ip_is_private: true, outbound: 'direct' }
   ]
   if (o.bypassProcesses?.length) routeRules.push({ process_path_regex: o.bypassProcesses.map(processPathRegex), outbound: 'direct' })

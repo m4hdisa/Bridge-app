@@ -146,6 +146,16 @@ export interface CoreStatus {
   otherTunnels?: string[]
   /** Local SOCKS5/HTTP proxy port while running. */
   proxyPort?: number
+  /** Where traffic leaves the VPN, looked up through the VPN shortly after connecting. */
+  exit?: ExitLocation
+}
+
+export interface ExitLocation {
+  ip: string
+  /** ISO 3166-1 alpha-2, e.g. "DE". */
+  countryCode: string
+  country: string
+  city?: string
 }
 
 /** Where an app's open connections go: through the VPN, direct, or some of each. */

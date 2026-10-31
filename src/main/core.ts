@@ -116,6 +116,8 @@ export class Core extends EventEmitter {
   private xrayChild?: ChildProcess
   private api?: ClashApi
   private proxyPort?: number
+  /** SOCKS port that always exits through the VPN (see BuildOptions.probePort); set while running. */
+  probePort?: number
   private statsTimer?: NodeJS.Timeout
   private healthTimer?: NodeJS.Timeout
   private settings?: Settings
@@ -223,6 +225,7 @@ export class Core extends EventEmitter {
     this.settings = settings
     try {
       const api: ClashApi = { port: await freePort(), secret: randomUUID() }
+      const probePort = await freePort()
       // Direct traffic must resolve with the real network's DNS; read it before TUN takes over.
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
       const usesXray = server.engine === 'xray'
@@ -254,7 +257,8 @@ export class Core extends EventEmitter {
         // xray.exe's own connection to the VPN server must not loop back into the VPN.
         bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : undefined,
         defaultInterface,
-        otherInterface: net.otherInterface
+        otherInterface: net.otherInterface,
+        probePort
       })
       const configFile = join(this.paths.dataDir, 'config.json')
       writeFileSync(configFile, JSON.stringify(config, null, 2))
@@ -262,6 +266,7 @@ export class Core extends EventEmitter {
 
       this.child = await launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine)
       this.api = api
+      this.probePort = probePort
       this.child.once('exit', (code) => this.onUnexpectedExit(code))
 
       if (settings.mode === 'system-proxy' && this.paths.manageSystemProxy !== false) {
@@ -349,7 +354,13 @@ export class Core extends EventEmitter {
     this.setStatus({ state: 'stopped' })
   }
 
+  /** Adds the VPN's exit location to the status (looked up by the app shell). */
+  setExit(exit: CoreStatus['exit']): void {
+    if (this.status.state === 'running') this.setStatus({ ...this.status, exit })
+  }
+
   private async cleanup(): Promise<void> {
+    this.probePort = undefined
     if (this.statsTimer) clearInterval(this.statsTimer)
     if (this.healthTimer) clearInterval(this.healthTimer)
     this.statsTimer = this.healthTimer = undefined

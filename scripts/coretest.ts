@@ -3,6 +3,7 @@
 // runs the latency test flow, then stops. Safe to run on a VPS.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
+import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Core } from '../src/main/core'
@@ -59,6 +60,25 @@ async function main() {
   check(core.logs.some((l) => /example\.com/.test(l.text) && /outbound\/vless\[proxy\]|proxy/.test(l.text)), 'request through local proxy was routed to the proxy outbound')
   await new Promise((r) => setTimeout(r, 2500))
   check(stats !== undefined, 'traffic stats arrive from the Clash API')
+
+  // The probe port must reach the VPN outbound regardless of mode / app rules.
+  const beforeProbe = core.logs.length
+  await new Promise<void>((resolve) => {
+    const s = connect({ host: '127.0.0.1', port: core.probePort! }, () => {
+      // SOCKS5 greeting + CONNECT example.com:80
+      s.write(Buffer.from([5, 1, 0]))
+      s.once('data', () => {
+        const host = Buffer.from('example.com')
+        s.write(Buffer.concat([Buffer.from([5, 1, 0, 3, host.length]), host, Buffer.from([0, 80])]))
+        setTimeout(() => {
+          s.destroy()
+          resolve()
+        }, 1500)
+      })
+    })
+    s.on('error', () => resolve())
+  })
+  check(core.logs.slice(beforeProbe).some((l) => /inbound\/socks\[probe-in\]/.test(l.text)) && core.logs.slice(beforeProbe).some((l) => /outbound\/vless\[proxy\]/.test(l.text)), 'probe port always exits through the VPN')
 
   await core.checkHealth()
   const h = core.status.health

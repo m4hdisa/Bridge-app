@@ -9,7 +9,9 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "composite": true
+    "composite": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/renderer/src/*"] }
   },
   "include": ["src/renderer/src/**/*", "src/shared/**/*"]
 }
