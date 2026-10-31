@@ -44,8 +44,12 @@ export interface Subscription {
   name: string
   url: string
   updatedAt?: number
-  /** Traffic info from the `subscription-userinfo` response header, when the panel sends it. */
-  usage?: { upload: number; download: number; total: number; expire?: number }
+  /**
+   * Traffic info from the `subscription-userinfo` response header, when the panel sends it.
+   * Panels that don't send it often put "120 GB Left / 26 Days" in a config name instead;
+   * then only `remaining` and `expire` are known (total is 0).
+   */
+  usage?: { upload: number; download: number; total: number; expire?: number; remaining?: number }
   lastError?: string
   /** How many configs the subscription contained last time (supported or not). */
   total?: number

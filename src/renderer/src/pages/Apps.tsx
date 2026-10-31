@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AppWindow, Ban, FolderOpen, Globe, Info, LoaderCircle, Plus, Search, Shield, Split, Trash2, Waypoints } from 'lucide-react'
 import type { AppAction, AppRule, RunningProcess } from '../../../shared/types'
 import { api, type PageProps } from '../App'
@@ -202,18 +202,23 @@ function AppPicker({
   const q = search.trim().toLowerCase()
   const shown = (list || []).filter((p) => !taken.has(p.path.toLowerCase()) && (p.name + p.path).toLowerCase().includes(q))
 
+  // Load the list every time the dialog opens. Radix only calls onOpenChange when the
+  // dialog closes itself, not when the page opens it, so this can't live there.
+  useEffect(() => {
+    if (!open) return
+    setList(undefined)
+    setSearch('')
+    void run(async () => {
+      // On failure show the empty state (and the error toast) instead of spinning forever.
+      setList(await api.listProcesses().catch((e) => {
+        setList([])
+        throw e
+      }))
+    })
+  }, [open])
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        onOpenChange(v)
-        if (v) {
-          setList(undefined)
-          setSearch('')
-          void run(async () => setList(await api.listProcesses()))
-        }
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Add a running app</DialogTitle>

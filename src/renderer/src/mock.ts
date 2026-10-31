@@ -17,7 +17,8 @@ export function createMockBridge(): BridgeApi {
         name: 'My provider',
         url: 'https://panel.example.com/sub/abc',
         updatedAt: Date.now() - 3600_000,
-        usage: { upload: 2e9, download: 18e9, total: 200e9, expire: Math.floor(Date.now() / 1000) + 26 * 86400 },
+        // Like panels that only write "173.83GB Left-expiredAt 26Days" into a config name.
+        usage: { upload: 0, download: 0, total: 0, remaining: 173.83 * 1024 ** 3, expire: Math.floor(Date.now() / 1000) + 26 * 86400 },
         total: 5,
         updateHours: 12,
         skipped: [

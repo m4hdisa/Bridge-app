@@ -204,7 +204,12 @@ function SubscriptionCard(props: { sub: Subscription; servers: ServerProfile[]; 
       <CardContent className="flex flex-col gap-4">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <Tile label="Traffic">
-            {u ? (
+            {u && !u.total && u.remaining !== undefined ? (
+              <>
+                <div className="tabular font-medium">{bytes(u.remaining)} left</div>
+                <div className="text-muted-foreground text-xs">From the config name</div>
+              </>
+            ) : u && (u.total || u.upload || u.download) ? (
               <>
                 <div className="tabular font-medium">
                   {bytes(used)} <span className="text-muted-foreground font-normal">/ {u.total ? bytes(u.total) : '∞'}</span>

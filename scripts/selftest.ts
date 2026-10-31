@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describeLink, extractLinks, parseLink } from '../src/main/parser'
 import { buildConfig, buildTestConfig } from '../src/main/config'
+import { usageFromNames } from '../src/main/subscription'
 import type { AppRule, ConnectionMode, Settings } from '../src/shared/types'
 
 const root = join(__dirname, '..')
@@ -145,6 +146,22 @@ check('VPN-only probe port (per-app)', buildConfig({ server: profiles[0], settin
 check('FakeIP DNS mode', buildConfig({ server: profiles[0], settings: { ...settings, dnsMode: 'fakeip' }, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
 check('explicit local DNS server', buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), localDns: { type: 'https', server: '1.1.1.1' }, defaultInterface: 'Wi-Fi', bypassProcesses: ['C:\\Program Files\\Bridge\\resources\\xray\\xray.exe'] }))
 check('latency test config', buildTestConfig(profiles, { port: 19091, secret: 'x' }))
+
+console.log('\nUsage written in config names (no subscription-userinfo header)')
+const GB = 1024 ** 3
+const nameCases: [string, string[], number | undefined, number | undefined][] = [
+  ['English GB Left / Days', ['vless://x@h:1?a=b#16423-%F0%9F%93%8A173.83GB%20Left-%F0%9F%95%90expiredAt%2026Days', 'vless://x@h:1#VLESS-TCP'], 173.83, 26],
+  ['Remaining: 50 GB', ['trojan://x@h:1#Remaining%3A%2050%20GB'], 50, undefined],
+  ['Persian', ['vless://x@h:1#' + encodeURIComponent('۱۲ روز باقیمانده - ۳۰ گیگ باقیمانده')], 30, 12],
+  ['plain names give nothing', ['vless://x@h:1#Germany', 'ss://abc#SS'], undefined, undefined]
+]
+for (const [label, links, gb, days] of nameCases) {
+  const u = usageFromNames(links)
+  const gotGb = u?.remaining !== undefined ? Math.round((u.remaining / GB) * 100) / 100 : undefined
+  const gotDays = u?.expire ? Math.ceil((u.expire * 1000 - Date.now()) / 86400000) : undefined
+  if (gotGb === gb && gotDays === days) ok(label)
+  else fail(label, `got ${gotGb} GB / ${gotDays} days`)
+}
 
 rmSync(dir, { recursive: true, force: true })
 console.log(failed ? `\n${failed} FAILED` : '\nAll passed')
