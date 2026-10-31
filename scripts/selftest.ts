@@ -39,6 +39,7 @@ const settings: Settings = {
   mixedPort: 2080,
   testUrl: 'https://www.gstatic.com/generate_204',
   strictRoute: false,
+  dnsMode: 'real',
   logLevel: 'info'
 }
 
@@ -139,6 +140,7 @@ for (const mode of ['system-proxy', 'tun', 'per-app', 'proxy-only'] as Connectio
     )
   }
 }
+check('FakeIP DNS mode', buildConfig({ server: profiles[0], settings: { ...settings, dnsMode: 'fakeip' }, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
 check('explicit local DNS server', buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), localDns: { type: 'https', server: '1.1.1.1' }, defaultInterface: 'Wi-Fi', bypassProcesses: ['C:\\Program Files\\Bridge\\resources\\xray\\xray.exe'] }))
 check('latency test config', buildTestConfig(profiles, { port: 19091, secret: 'x' }))
 

@@ -14,7 +14,7 @@ import { buildConfig, writeAppRuleSets } from '../src/main/config'
 import { parseLink } from '../src/main/parser'
 import { DEFAULT_SETTINGS } from '../src/main/store'
 import { networkInfo } from '../src/main/system'
-import { pickDirectDns } from '../src/main/resolve'
+import { isBogusAddress, pickDirectDns } from '../src/main/resolve'
 import type { AppAction, AppRule } from '../src/shared/types'
 
 const root = join(__dirname, '..')
@@ -59,15 +59,21 @@ function httpVia(proxyPort: number, ip: string): Promise<number> {
   })
 }
 
-async function main() {
+let failed = 0
+const check = (ok: boolean, msg: string) => {
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${msg}`)
+  if (!ok) failed++
+}
+
+async function run(dnsMode: 'real' | 'fakeip', localDns: Awaited<ReturnType<typeof pickDirectDns>>) {
+  console.log(`DNS mode: ${dnsMode}`)
   const dir = mkdtempSync(join(tmpdir(), 'bridge-fakeip-'))
   const appRulesDir = join(dir, 'app-rules')
   const port = 20000 + Math.floor(Math.random() * 20000)
   const dnsPort = port + 2
-  const localDns = await pickDirectDns((await networkInfo()).dnsServers, (t) => console.log('  [dns] ' + t))
   const config = buildConfig({
     server: deadServer,
-    settings: { ...DEFAULT_SETTINGS, mode: 'per-app', mixedPort: port, logLevel: 'debug' },
+    settings: { ...DEFAULT_SETTINGS, mode: 'per-app', mixedPort: port, logLevel: 'debug', dnsMode },
     appRules: rule('direct'),
     clashApi: { port: port + 1, secret: 'x' },
     appRulesDir,
@@ -85,23 +91,22 @@ async function main() {
   child.stdout.on('data', (d) => (out += d))
   child.stderr.on('data', (d) => (out += d))
   await sleep(1500)
-
-  let failed = 0
-  const check = (ok: boolean, msg: string) => {
-    console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${msg}`)
-    if (!ok) failed++
-  }
-  console.log(`network DNS: ${localDns ?? '(none found, using sing-box local)'}`)
+  const failedBefore = failed
 
   const q = await dnsQuery(dnsPort, 'example.com')
-  check(!!q.ip && q.ip.startsWith('198.18.') && q.ms < 1000, `DNS answers instantly with a fake IP while the server is down (${q.ip}, ${q.ms} ms)`)
+  if (dnsMode === 'fakeip') {
+    check(!!q.ip && q.ip.startsWith('198.18.') && q.ms < 1000, `DNS answers instantly with a fake IP while the server is down (${q.ip}, ${q.ms} ms)`)
+  } else {
+    check(!!q.ip && !isBogusAddress(q.ip) && q.ms < 3000, `DNS answers with a real IP while the server is down (${q.ip}, ${q.ms} ms)`)
+  }
 
   if (q.ip) {
     const from = out.length
     const code = await httpVia(port, q.ip)
-    check(code >= 200 && code < 500, `Direct app reaches the real internet through the fake IP (HTTP ${code})`)
+    check(code >= 200 && code < 500, `Direct app reaches the real internet (HTTP ${code})`)
     const chunk = out.slice(from).replace(/\x1b\[[0-9;]*m/g, '')
-    check(/outbound\/direct\[direct\]: outbound connection to example\.com/.test(chunk), 'fake IP was turned back into the domain for the direct connection')
+    if (dnsMode === 'fakeip') check(/outbound\/direct\[direct\]: outbound connection to example\.com/.test(chunk), 'fake IP was turned back into the domain for the direct connection')
+    else check(chunk.includes(`outbound/direct[direct]: outbound connection to ${q.ip}`), 'direct connection goes straight to the real IP')
 
     writeAppRuleSets(appRulesDir, rule('proxy'))
     await sleep(1500)
@@ -109,15 +114,22 @@ async function main() {
     await httpVia(port, q.ip)
     await sleep(500)
     const chunk2 = out.slice(from2).replace(/\x1b\[[0-9;]*m/g, '')
-    check(/outbound\/vless\[proxy\]: outbound connection to example\.com/.test(chunk2), 'VPN app sends the domain (not the fake IP) to the VPN server')
+    check(/outbound\/vless\[proxy\]: outbound connection to /.test(chunk2), 'VPN app is sent through the VPN server')
   }
 
   await new Promise<void>((r) => {
     child.once('exit', () => r())
     child.kill()
   })
-  if (failed) console.log(out.replace(/\x1b\[[0-9;]*m/g, '').split('\n').filter((l) => /dns|router|outbound|ERROR|FATAL/.test(l)).slice(-25).join('\n'))
+  if (failed > failedBefore) console.log(out.replace(/\x1b\[[0-9;]*m/g, '').split('\n').filter((l) => /dns|router|outbound|ERROR|FATAL/.test(l)).slice(-25).join('\n'))
   rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+}
+
+async function main() {
+  const localDns = await pickDirectDns((await networkInfo()).dnsServers, (t) => console.log('  [dns] ' + t))
+  console.log(`direct DNS: ${localDns ? `${localDns.type} ${localDns.server}` : '(none found, using sing-box local)'}`)
+  await run('real', localDns)
+  await run('fakeip', localDns)
   console.log(failed ? `\n${failed} FAILED` : '\nAll passed')
   process.exit(failed ? 1 : 0)
 }

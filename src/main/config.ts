@@ -85,13 +85,14 @@ export function writeAppRuleSets(dir: string, rules: AppRule[]): void {
 }
 
 /**
- * DNS design (TUN modes):
- * Windows resolves names for every app through one service (svchost), so DNS can't
- * be routed per app. Instead every A/AAAA query gets an instant local fake IP. When
- * an app then connects to that fake IP, sing-box knows the app *and* the domain:
- *  - VPN apps:    the domain is sent to the server and resolved there (no Iranian DNS poisoning)
- *  - direct apps: the domain is resolved with the system's real DNS (dns-local)
- * So direct apps never depend on the VPN server being up.
+ * DNS design (TUN modes). Windows resolves names for every app through one service
+ * (svchost), so DNS can't be routed per app. TUN hijacks those queries and answers them:
+ *  - "real" (default): with real IPs from a clean DNS-over-HTTPS resolver (dns-local,
+ *    direct, port 443). No Iranian DNS poisoning, no dependency on the VPN server, and
+ *    other tools that pick traffic by IP (game boosters like EZConnect) keep working.
+ *  - "fakeip": every A/AAAA query gets an instant fake IP; sing-box maps it back to the
+ *    domain when the app connects. Fast, but tools that work by IP see only 198.18.x.x
+ *    and break (EZConnect lost Discord this way).
  */
 function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
   const local: Json = o.localDns ? { type: o.localDns.type, tag: 'dns-local', server: o.localDns.server } : { type: 'local', tag: 'dns-local' }
@@ -101,7 +102,7 @@ function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
     if (iranRules) rules.push({ rule_set: ['geosite-ir'], server: 'dns-local' })
   }
   const servers: Json[] = [local]
-  if (useTun) {
+  if (useTun && o.settings.dnsMode === 'fakeip') {
     servers.push({ type: 'fakeip', tag: 'dns-fake', inet4_range: '198.18.0.0/15' })
     rules.push({ query_type: ['A', 'AAAA'], server: 'dns-fake' })
   }
@@ -175,7 +176,7 @@ export function buildConfig(o: BuildOptions): Json {
     clash_api: { external_controller: `127.0.0.1:${o.clashApi.port}`, secret: o.clashApi.secret }
   }
   // store_fakeip keeps fake IP mappings across reconnects, so apps that cached one keep working.
-  if (o.cacheFile) experimental.cache_file = { enabled: true, path: o.cacheFile, store_fakeip: useTun }
+  if (o.cacheFile) experimental.cache_file = { enabled: true, path: o.cacheFile, store_fakeip: useTun && settings.dnsMode === 'fakeip' }
 
   return {
     log: { level: settings.logLevel, timestamp: true },

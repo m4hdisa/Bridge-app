@@ -6,7 +6,13 @@ export function Logs({ logs, run }: PageProps) {
   const [search, setSearch] = useState('')
   const end = useRef<HTMLDivElement>(null)
   const query = search.trim().toLowerCase()
-  const shown = logs.filter((l) => (!errorsOnly || l.level !== 'info') && (!query || l.text.toLowerCase().includes(query)))
+  // sing-box tags each connection's lines with an id like "[123456 0ms]". When searching,
+  // also show every line of the matching connections, so a search for "chrome" shows
+  // where those connections went and why they failed, not just "found process path".
+  const connId = (text: string) => text.match(/\[(\d+) [\d.]+m?s\]/)?.[1]
+  const ids = new Set(query ? logs.filter((l) => l.text.toLowerCase().includes(query)).map((l) => connId(l.text)).filter(Boolean) : [])
+  const matches = (l: (typeof logs)[number]) => !query || l.text.toLowerCase().includes(query) || ids.has(connId(l.text))
+  const shown = logs.filter((l) => (!errorsOnly || l.level !== 'info') && matches(l))
 
   useEffect(() => end.current?.scrollIntoView(), [shown.length])
 

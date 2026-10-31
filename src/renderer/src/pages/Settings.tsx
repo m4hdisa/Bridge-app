@@ -24,6 +24,14 @@ export function SettingsPage({ state, run }: PageProps) {
         </label>
 
         <label>
+          DNS mode (Full VPN and Per-App)
+          <select value={draft.dnsMode} onChange={(e) => set('dnsMode', e.target.value as Settings['dnsMode'])}>
+            <option value="real">Real IPs over DNS-over-HTTPS (works with other VPN / game tools)</option>
+            <option value="fakeip">FakeIP (slightly faster, breaks tools like EZConnect)</option>
+          </select>
+        </label>
+
+        <label>
           Local proxy port (HTTP + SOCKS5 on 127.0.0.1)
           <input type="number" min={1024} max={65535} value={draft.mixedPort} onChange={(e) => set('mixedPort', Number(e.target.value))} />
         </label>

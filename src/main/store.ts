@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: Settings = {
   mixedPort: 2080,
   testUrl: 'https://www.gstatic.com/generate_204',
   strictRoute: false,
+  dnsMode: 'real',
   logLevel: 'info'
 }
 

@@ -93,6 +93,13 @@ export interface Settings {
    * breaks other VPN / game tools running alongside Bridge. Off by default.
    */
   strictRoute: boolean
+  /**
+   * How names are answered in TUN modes.
+   * real:   real IPs from a clean DNS-over-HTTPS resolver. Other tools that work by IP
+   *         (game boosters like EZConnect, WARP split tunnels) keep working. Default.
+   * fakeip: instant fake IPs (198.18.x.x); slightly faster, but breaks such tools.
+   */
+  dnsMode: 'real' | 'fakeip'
   logLevel: 'debug' | 'info' | 'warn' | 'error'
 }
 
