@@ -140,6 +140,7 @@ for (const mode of ['system-proxy', 'tun', 'per-app', 'proxy-only'] as Connectio
     )
   }
 }
+check('Other VPN apps bound to another adapter', buildConfig({ server: profiles[0], settings: { ...settings, mode: 'per-app' }, appRules: [{ id: 'd', name: 'Discord.exe', path: 'C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0\\Discord.exe', action: 'other', enabled: true }], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), otherInterface: 'Ezconnect Virtual Adapter', defaultInterface: 'Wi-Fi' }))
 check('FakeIP DNS mode', buildConfig({ server: profiles[0], settings: { ...settings, dnsMode: 'fakeip' }, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
 check('explicit local DNS server', buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), localDns: { type: 'https', server: '1.1.1.1' }, defaultInterface: 'Wi-Fi', bypassProcesses: ['C:\\Program Files\\Bridge\\resources\\xray\\xray.exe'] }))
 check('latency test config', buildTestConfig(profiles, { port: 19091, secret: 'x' }))

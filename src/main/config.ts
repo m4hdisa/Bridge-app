@@ -30,11 +30,13 @@ export interface BuildOptions {
    * sing-box pick one, so it never leaves through another tool's tunnel.
    */
   defaultInterface?: string
+  /** Adapter of another VPN tool (e.g. "Ezconnect Virtual Adapter") for apps set to "Other VPN". */
+  otherInterface?: string
 }
 
 type Json = Record<string, unknown>
 
-const APP_ACTIONS: AppAction[] = ['block', 'direct', 'proxy']
+const APP_ACTIONS: AppAction[] = ['block', 'direct', 'other', 'proxy']
 /** A regex no exe path can match, so an empty rule-set file is still valid. */
 const NEVER_MATCH = '^:no-app:$'
 
@@ -127,6 +129,12 @@ export function buildConfig(o: BuildOptions): Json {
       address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
       mtu: 9000,
       auto_route: true,
+      // Two half routes instead of a default route (OpenVPN's "def1" trick): they are more
+      // specific, so all traffic still enters the TUN, but Windows' real default route stays
+      // on Wi-Fi / Ethernet. Tools that look up "the" default route to find the internet
+      // (EZConnect / WireSock, WireGuard clients) then still find the real adapter instead of
+      // Bridge's gateway-less tunnel; with a 0.0.0.0/0 route they failed to connect.
+      route_address: ['0.0.0.0/1', '128.0.0.0/1', '::/1', '8000::/1'],
       strict_route: settings.strictRoute,
       stack: 'mixed'
     })
@@ -141,6 +149,7 @@ export function buildConfig(o: BuildOptions): Json {
   // App rules live in rule-set files (always present, possibly empty) so they can change while connected.
   routeRules.push({ rule_set: ['apps-block'], action: 'reject' })
   routeRules.push({ rule_set: ['apps-direct'], outbound: 'direct' })
+  routeRules.push({ rule_set: ['apps-other'], outbound: 'direct-other' })
   if (settings.bypassIran) {
     routeRules.push({ domain_suffix: ['.ir'], outbound: 'direct' })
     if (iranRules) routeRules.push({ rule_set: ['geosite-ir', 'geoip-ir'], outbound: 'direct' })
@@ -184,7 +193,10 @@ export function buildConfig(o: BuildOptions): Json {
     inbounds,
     outbounds: [
       { ...normalizeOutbound(o.server.outbound), tag: 'proxy' },
-      { type: 'direct', tag: 'direct' }
+      { type: 'direct', tag: 'direct' },
+      // Apps set to "Other VPN" leave through the other tool's adapter, so that tool
+      // (e.g. EZConnect) carries them; without one they simply go direct.
+      o.otherInterface ? { type: 'direct', tag: 'direct-other', bind_interface: o.otherInterface } : { type: 'direct', tag: 'direct-other' }
     ],
     route,
     experimental

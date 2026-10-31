@@ -85,6 +85,8 @@ export interface NetworkInfo {
    * any virtual adapter holds a default route, so traffic can't wander into it.
    */
   bindPhysical: boolean
+  /** Another VPN tool's adapter, used for apps set to "Other VPN". */
+  otherInterface?: string
 }
 
 /**
@@ -105,10 +107,15 @@ $virtual = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Na
 # Only adapters that are up carry traffic; others may keep a stale default route
 # (EZConnect's WireSock adapter does, even with EZConnect closed).
 $others = @($virtual | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { "$($_.Name) ($($_.InterfaceDescription))" })
-$virtualRoute = @($routes | Where-Object { $virtual.ifIndex -contains $_.ifIndex }).Count -gt 0
+$tunnelRoutes = @($routes | Where-Object { $virtual.ifIndex -contains $_.ifIndex } | Sort-Object $metric)
+$virtualRoute = $tunnelRoutes.Count -gt 0
+# The other tool's adapter for "Other VPN" apps: prefer one that is up, else one holding a
+# default route (it comes up when that tool connects, even after Bridge started).
+$upTunnel = $tunnelRoutes | Where-Object { $i = $_.ifIndex; ($virtual | Where-Object ifIndex -eq $i).Status -eq 'Up' } | Select-Object -First 1
+$otherIf = if ($upTunnel) { $upTunnel.InterfaceAlias } elseif ($tunnelRoutes.Count) { $tunnelRoutes[0].InterfaceAlias } else { ($virtual | Where-Object Status -eq 'Up' | Select-Object -First 1).Name }
 $defaults = @($routes | Sort-Object $metric | ForEach-Object { "$($_.InterfaceAlias) (metric $(& $metric))" })
-[pscustomobject]@{ alias = $best.InterfaceAlias; dns = $dns; others = $others; defaults = $defaults; virtualRoute = $virtualRoute } | ConvertTo-Json -Compress`)
-    const j = JSON.parse(stdout.trim() || '{}') as { alias?: string; dns?: string[] | string; others?: string[] | string; defaults?: string[] | string; virtualRoute?: boolean }
+[pscustomobject]@{ alias = $best.InterfaceAlias; dns = $dns; others = $others; defaults = $defaults; virtualRoute = $virtualRoute; otherIf = $otherIf } | ConvertTo-Json -Compress`)
+    const j = JSON.parse(stdout.trim() || '{}') as { alias?: string; dns?: string[] | string; others?: string[] | string; defaults?: string[] | string; virtualRoute?: boolean; otherIf?: string }
     const arr = (v?: string[] | string) => (Array.isArray(v) ? v : v ? [v] : [])
     const otherTunnels = arr(j.others)
     return {
@@ -116,7 +123,8 @@ $defaults = @($routes | Sort-Object $metric | ForEach-Object { "$($_.InterfaceAl
       dnsServers: arr(j.dns).filter((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip)),
       otherTunnels,
       defaultRoutes: arr(j.defaults),
-      bindPhysical: otherTunnels.length > 0 || !!j.virtualRoute
+      bindPhysical: otherTunnels.length > 0 || !!j.virtualRoute,
+      otherInterface: j.otherIf || undefined
     }
   } catch {
     return { dnsServers: [], otherTunnels: [], defaultRoutes: [], bindPhysical: false }

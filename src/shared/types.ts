@@ -67,7 +67,13 @@ export function usesTun(mode: ConnectionMode): boolean {
   return mode === 'tun' || mode === 'per-app'
 }
 
-export type AppAction = 'proxy' | 'direct' | 'block'
+/**
+ * proxy:  through Bridge's VPN server.
+ * direct: straight out of the real Wi-Fi / Ethernet adapter.
+ * other:  handed to another VPN tool's adapter (e.g. EZConnect for Discord / games).
+ * block:  no network.
+ */
+export type AppAction = 'proxy' | 'direct' | 'other' | 'block'
 
 export interface AppRule {
   id: string

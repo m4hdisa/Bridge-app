@@ -5,6 +5,7 @@ import { api, type PageProps } from '../App'
 const ACTIONS: { id: AppAction; label: string }[] = [
   { id: 'proxy', label: 'Use VPN' },
   { id: 'direct', label: 'Direct' },
+  { id: 'other', label: 'Other VPN' },
   { id: 'block', label: 'Block' }
 ]
 
@@ -54,6 +55,10 @@ export function Apps({ state, run }: PageProps) {
         {mode === 'tun' && 'Full VPN mode: every app uses the VPN, except apps set to "Direct" or "Block".'}
         {mode === 'system-proxy' && 'System Proxy mode: "Direct" and "Block" apply to apps that use the system proxy. Switch to Per-App for full control.'}
         {mode === 'proxy-only' && 'Proxy only mode: "Direct" and "Block" apply to apps you point at the local proxy. Switch to Per-App for full control.'}
+      </p>
+      <p className="muted small">
+        "Other VPN" hands an app to another VPN / game tool running next to Bridge (e.g. EZConnect for Discord or FiveM), so
+        that tool keeps carrying it. Without such a tool the app goes direct.
       </p>
 
       {picker && (

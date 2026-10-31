@@ -22,6 +22,7 @@ const rule = (path: string, action: AppAction): AppRule[] => [{ id: '1', name: '
 const EXPECT: Record<AppAction | 'none', RegExp> = {
   proxy: /outbound\/vless\[proxy\]/,
   direct: /outbound\/direct\[direct\]/,
+  other: /outbound\/direct\[direct-other\]/,
   block: /reject|blocked/i,
   none: /outbound\/direct\[direct\]/
 }
@@ -66,6 +67,7 @@ async function main() {
   const steps: { label: string; rules?: AppRule[]; expect: keyof typeof EXPECT }[] = [
     { label: 'starts with "Use VPN" -> proxy', expect: 'proxy' },
     { label: 'live change to Direct -> direct', rules: rule(self, 'direct'), expect: 'direct' },
+    { label: 'live change to Other VPN -> other tool\'s adapter', rules: rule(self, 'other'), expect: 'other' },
     { label: 'live change to Block -> rejected', rules: rule(self, 'block'), expect: 'block' },
     { label: 'live change, different case path -> proxy', rules: rule(self.toUpperCase(), 'proxy'), expect: 'proxy' },
     { label: 'live change, other app only -> this app direct', rules: rule('C:\\Other\\app.exe', 'proxy'), expect: 'none' },

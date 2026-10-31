@@ -227,7 +227,7 @@ export class Core extends EventEmitter {
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
       const usesXray = server.engine === 'xray'
       const tun = usesTun(settings.mode)
-      const net = tun ? await networkInfo() : { dnsServers: [], otherTunnels: [] as string[], defaultRoutes: [] as string[], interfaceAlias: undefined, bindPhysical: false }
+      const net: Awaited<ReturnType<typeof networkInfo>> = tun ? await networkInfo() : { dnsServers: [], otherTunnels: [], defaultRoutes: [], bindPhysical: false }
       if (net.defaultRoutes.length) this.log(`Default routes before connecting: ${net.defaultRoutes.join(', ')}`)
       const [localDns, pinned] = await Promise.all([
         tun ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
@@ -240,6 +240,8 @@ export class Core extends EventEmitter {
       const defaultInterface = net.bindPhysical ? net.interfaceAlias : undefined
       if (net.otherTunnels.length) this.log(`Other tunnels are active: ${net.otherTunnels.join(', ')}. They may conflict with Bridge.`, 'warn')
       if (defaultInterface) this.log(`Bridge traffic is bound to "${defaultInterface}" to stay out of other tunnels`)
+      if (net.otherInterface) this.log(`Apps set to "Other VPN" go through "${net.otherInterface}"`)
+      else if (appRules.some((r) => r.enabled && r.action === 'other')) this.log('No other VPN adapter found; apps set to "Other VPN" go direct', 'warn')
       const config = buildConfig({
         server: pinned,
         settings,
@@ -251,7 +253,8 @@ export class Core extends EventEmitter {
         localDns,
         // xray.exe's own connection to the VPN server must not loop back into the VPN.
         bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : undefined,
-        defaultInterface
+        defaultInterface,
+        otherInterface: net.otherInterface
       })
       const configFile = join(this.paths.dataDir, 'config.json')
       writeFileSync(configFile, JSON.stringify(config, null, 2))
