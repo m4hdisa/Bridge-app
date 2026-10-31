@@ -65,7 +65,7 @@ export function App() {
         if (s.error) toast.error(s.error)
       }),
       api.onStats(setStats),
-      api.onLog((l) => setLogs((prev) => [...prev.slice(-999), l]))
+      api.onLogs((lines) => setLogs((prev) => [...prev, ...lines].slice(-1000)))
     ]
     return () => offs.forEach((off) => off())
   }, [])

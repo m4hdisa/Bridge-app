@@ -1,7 +1,7 @@
 {
   "name": "bridge",
   "productName": "Bridge",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Windows VPN client (VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC) with per-app routing",
   "main": "./out/main/index.js",
   "private": true,

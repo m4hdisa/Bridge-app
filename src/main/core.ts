@@ -161,11 +161,11 @@ export class Core extends EventEmitter {
   }
 
   /** Starts xray.exe with one local SOCKS inbound per entry; resolves once the first port accepts connections. */
-  private async launchXray(entries: { port: number; outbound: XrayOutbound }[], name: string): Promise<ChildProcess> {
+  private async launchXray(entries: { port: number; outbound: XrayOutbound }[], name: string, bindInterface?: string): Promise<ChildProcess> {
     const exe = this.paths.xray
     if (!exe || !existsSync(exe)) throw new Error('Xray core not found; this server needs it (reinstall Bridge)')
     const file = join(this.paths.dataDir, `${name}.json`)
-    writeFileSync(file, JSON.stringify(buildXrayConfig(entries), null, 2))
+    writeFileSync(file, JSON.stringify(buildXrayConfig(entries, 'warning', bindInterface), null, 2))
     const child = spawn(exe, ['run', '-c', file], { windowsHide: true })
     const feed = (chunk: Buffer) => chunk.toString().split(/\r?\n/).filter((l) => l.trim()).forEach(this.xrayLine)
     child.stdout?.on('data', feed)
@@ -186,17 +186,17 @@ export class Core extends EventEmitter {
    * For servers run by Xray, starts xray.exe and returns the server as sing-box should see it:
    * a SOCKS hop into Xray. Other servers are returned unchanged.
    */
-  private async viaXray(server: ServerProfile): Promise<ServerProfile> {
+  private async viaXray(server: ServerProfile, bindInterface?: string): Promise<ServerProfile> {
     if (server.engine !== 'xray') return server
     if (!server.xray) throw new Error('This server has no Xray settings; update its subscription or import it again')
     const port = await freePort()
-    this.xrayChild = await this.launchXray([{ port, outbound: await this.pinXray(server.xray) }], 'xray-config')
+    this.xrayChild = await this.launchXray([{ port, outbound: await this.pinXray(server.xray) }], 'xray-config', bindInterface)
     this.xrayChild.once('exit', (code) => {
       if (this.status.state !== 'running') return
       this.log(`Xray stopped unexpectedly (exit code ${code})`, 'error')
       void this.stop().then(() => this.setStatus({ state: 'stopped', error: 'Xray core stopped unexpectedly, see Logs' }))
     })
-    this.log(`Using Xray core for ${server.name} (local SOCKS ${port})`)
+    this.log(`Using Xray core for ${server.name} (local SOCKS ${port}${bindInterface ? `, bound to "${bindInterface}"` : ''})`)
     return { ...server, outbound: socksOutbound(port) }
   }
 
@@ -234,7 +234,8 @@ export class Core extends EventEmitter {
       if (net.defaultRoutes.length) this.log(`Default routes before connecting: ${net.defaultRoutes.join(', ')}`)
       const [localDns, pinned] = await Promise.all([
         tun ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
-        usesXray ? this.viaXray(server) : this.pinAddress(server)
+        // In TUN modes Xray goes straight out of the real adapter instead of looping through TUN.
+        usesXray ? this.viaXray(server, tun ? net.interfaceAlias : undefined) : this.pinAddress(server)
       ])
       if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? 'DNS-over-HTTPS' : 'DNS'} ${localDns.server}`)
       else if (tun) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
@@ -254,7 +255,7 @@ export class Core extends EventEmitter {
         cacheFile: join(this.paths.dataDir, 'cache.db'),
         appRulesDir: this.appRulesDir,
         localDns,
-        // xray.exe's own connection to the VPN server must not loop back into the VPN.
+        // Safety net in case xray.exe's traffic still reaches TUN: it must not loop back into the VPN.
         bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : undefined,
         defaultInterface,
         otherInterface: net.otherInterface,

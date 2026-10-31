@@ -166,6 +166,6 @@ export function createMockBridge(): BridgeApi {
     onState: sub(listeners.state),
     onStatus: sub(listeners.status),
     onStats: sub(listeners.stats),
-    onLog: sub(listeners.log)
+    onLogs: (cb) => sub(listeners.log)((l) => cb([l]))
   }
 }

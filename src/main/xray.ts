@@ -226,8 +226,13 @@ export function xrayWithServerIp(o: XrayOutbound, ip: string): XrayOutbound {
   return out
 }
 
-/** One local SOCKS port per outbound; each inbound is routed to its own outbound. */
-export function buildXrayConfig(entries: { port: number; outbound: XrayOutbound }[], logLevel = 'warning'): Record<string, any> {
+/**
+ * One local SOCKS port per outbound; each inbound is routed to its own outbound.
+ * `bindInterface` (the real Wi-Fi / Ethernet adapter) makes Xray's connection to the VPN
+ * server skip Bridge's TUN. Without it every packet went through TUN twice (app -> TUN ->
+ * sing-box -> Xray -> TUN again -> sing-box -> internet), which cost a lot of speed.
+ */
+export function buildXrayConfig(entries: { port: number; outbound: XrayOutbound }[], logLevel = 'warning', bindInterface?: string): Record<string, any> {
   return {
     log: { loglevel: logLevel },
     inbounds: entries.map((e, i) => ({
@@ -237,7 +242,11 @@ export function buildXrayConfig(entries: { port: number; outbound: XrayOutbound 
       protocol: 'socks',
       settings: { auth: 'noauth', udp: true }
     })),
-    outbounds: entries.map((e, i) => ({ ...e.outbound, tag: `out-${i}` })),
+    outbounds: entries.map((e, i) => {
+      const o = structuredClone(e.outbound)
+      if (bindInterface) o.streamSettings = { ...o.streamSettings, sockopt: { ...o.streamSettings?.sockopt, interface: bindInterface } }
+      return { ...o, tag: `out-${i}` }
+    }),
     routing: { rules: entries.map((_, i) => ({ inboundTag: [`in-${i}`], outboundTag: `out-${i}` })) }
   }
 }

@@ -8,7 +8,7 @@ import { Store } from './store'
 import { fetchSubscription } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
 import { usesTun } from '../shared/types'
-import type { AppRule, Engine, ImportResult, RunningProcess, ServerProfile, Settings, SkippedConfig } from '../shared/types'
+import type { AppRule, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
 
@@ -55,7 +55,18 @@ core.on('status', (s) => {
   }
 })
 core.on('stats', (s) => send('stats', s))
-core.on('log', (l) => send('log', l))
+// Under load sing-box prints hundreds of lines a second; sending each one made the
+// whole UI re-render per line. Batch them instead.
+let logBatch: LogLine[] = []
+let logTimer: NodeJS.Timeout | undefined
+core.on('log', (l: LogLine) => {
+  logBatch.push(l)
+  logTimer ??= setTimeout(() => {
+    send('logs', logBatch.slice(-1000))
+    logBatch = []
+    logTimer = undefined
+  }, 250)
+})
 
 // ---------- servers ----------
 

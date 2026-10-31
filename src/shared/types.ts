@@ -237,5 +237,6 @@ export interface BridgeApi {
   onState(cb: (state: AppState) => void): () => void
   onStatus(cb: (status: CoreStatus) => void): () => void
   onStats(cb: (stats: TrafficStats) => void): () => void
-  onLog(cb: (line: LogLine) => void): () => void
+  /** New log lines, delivered in batches (a few times a second) to keep the UI light under heavy traffic. */
+  onLogs(cb: (lines: LogLine[]) => void): () => void
 }
