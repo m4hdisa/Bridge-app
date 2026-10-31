@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { extractLinks, parseLink } from '../src/main/parser'
+import { describeLink, extractLinks, parseLink } from '../src/main/parser'
 import { buildConfig, buildTestConfig } from '../src/main/config'
 import type { AppRule, ConnectionMode, Settings } from '../src/shared/types'
 
@@ -103,6 +103,11 @@ for (const [label, link] of [
     if (/not supported/.test(String(e))) ok(`${label}: "${(e as Error).message}"`)
     else fail(label, e)
   }
+}
+{
+  const d = describeLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:7779?type=xhttp&security=reality#VLESS-REALITY-XHTTP')
+  if (d.name === 'VLESS-REALITY-XHTTP' && d.kind === 'vless / xhttp / reality') ok(`unsupported link still described: ${d.name} (${d.kind})`)
+  else fail('describeLink', JSON.stringify(d))
 }
 try {
   parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?type=xhttp&security=tls')

@@ -52,6 +52,26 @@ export function extractLinks(text: string): string[] {
     .filter((l) => /^[a-z0-9]+:\/\//i.test(l))
 }
 
+/** Best-effort name and "protocol / transport" of any share link, even one that can't be used. */
+export function describeLink(link: string): { name: string; kind: string } {
+  const scheme = link.slice(0, link.indexOf('://')).toLowerCase()
+  try {
+    if (scheme === 'vmess') {
+      const j = JSON.parse(decodeBase64(link.slice('vmess://'.length)))
+      return { name: String(j.ps || j.add || 'vmess'), kind: `vmess / ${j.net || 'tcp'}` }
+    }
+    const hash = link.indexOf('#')
+    const name = hash >= 0 ? safeDecode(link.slice(hash + 1)) : ''
+    const query = new URLSearchParams(link.split('#')[0].split('?')[1] || '')
+    const transport = query.get('type')
+    const security = query.get('security')
+    const kind = [scheme, transport, security && security !== 'none' ? security : ''].filter(Boolean).join(' / ')
+    return { name: name || link.split('@')[1]?.split(/[?#]/)[0] || scheme, kind }
+  } catch {
+    return { name: link.slice(0, 40), kind: scheme }
+  }
+}
+
 export function parseLink(link: string): ServerProfile {
   const scheme = link.slice(0, link.indexOf('://')).toLowerCase()
   switch (scheme) {

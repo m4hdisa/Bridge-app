@@ -5,8 +5,8 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildConfig, buildTestConfig, withServerIp, writeAppRuleSets, type ClashApi } from './config'
-import { ServerResolver } from './resolve'
-import { clearSystemProxy, flushDns, freePort, physicalDnsServer, setSystemProxy } from './system'
+import { pickDirectDns, ServerResolver } from './resolve'
+import { clearSystemProxy, flushDns, freePort, physicalDnsServers, setSystemProxy } from './system'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats } from '../shared/types'
 
 export interface CorePaths {
@@ -140,11 +140,13 @@ export class Core extends EventEmitter {
     try {
       const api: ClashApi = { port: await freePort(), secret: randomUUID() }
       // Direct traffic must resolve with the real network's DNS; read it before TUN takes over.
+      const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
       const [localDns, pinned] = await Promise.all([
-        settings.mode !== 'system-proxy' ? physicalDnsServer() : Promise.resolve(undefined),
+        settings.mode !== 'system-proxy' ? physicalDnsServers().then((s) => pickDirectDns(s, log)) : Promise.resolve(undefined),
         this.pinAddress(server)
       ])
-      if (localDns) this.log(`Using network DNS ${localDns} for direct traffic`)
+      if (localDns) this.log(`Direct apps resolve names with DNS ${localDns}`)
+      else if (settings.mode !== 'system-proxy') this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
       const config = buildConfig({
         server: pinned,
         settings,

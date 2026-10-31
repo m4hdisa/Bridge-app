@@ -3,7 +3,7 @@
 // which made sing-box dial 10.10.34.34 instead of the real server. So the server's
 // address is looked up before connecting, from several sources, ignoring poisoned
 // answers, and the last good answer is remembered for when every source fails.
-import { promises as dns } from 'node:dns'
+import { promises as dns, Resolver } from 'node:dns'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { isIP } from 'node:net'
 
@@ -43,6 +43,32 @@ async function viaSystem(name: string): Promise<string> {
   const { address } = await dns.lookup(name, { family: 4 })
   if (isBogusAddress(address)) throw new Error(`poisoned answer ${address}`)
   return address
+}
+
+/** Sends a real UDP DNS query to one server and checks it answers. */
+async function dnsServerWorks(server: string): Promise<boolean> {
+  const resolver = new Resolver({ timeout: 2000, tries: 1 })
+  resolver.setServers([server])
+  return new Promise((resolve) => {
+    resolver.resolve4('www.microsoft.com', (err, addresses) => resolve(!err && addresses.some((a) => !isBogusAddress(a))))
+  })
+}
+
+/**
+ * Chooses the DNS server that Direct apps' domains are resolved with while TUN is on.
+ * The network's own DNS is preferred (fastest, local CDN answers), but only if it
+ * really answers: VPN tools like Cloudflare WARP set it to a loopback address
+ * (127.0.2.2) that can't be reached from sing-box, which left Direct apps with no
+ * DNS at all. Public resolvers are the fallback. Must run before TUN starts.
+ */
+export async function pickDirectDns(networkServers: string[], log: (text: string, level?: 'info' | 'warn') => void): Promise<string | undefined> {
+  const usable = networkServers.filter((s) => !s.startsWith('127.') && !s.startsWith('0.'))
+  for (const s of networkServers.filter((s) => !usable.includes(s))) log(`Network DNS ${s} is a local address (probably another VPN tool), not using it`, 'warn')
+  const candidates = [...new Set([...usable, '1.1.1.1', '8.8.8.8', '9.9.9.9'])]
+  const results = await Promise.all(candidates.map((s) => dnsServerWorks(s)))
+  const chosen = candidates.find((_, i) => results[i])
+  for (const [i, s] of candidates.entries()) if (!results[i] && usable.includes(s)) log(`Network DNS ${s} did not answer, skipping it`, 'warn')
+  return chosen
 }
 
 export class ServerResolver {

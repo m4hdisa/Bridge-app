@@ -12,7 +12,19 @@ export function createMockBridge(): BridgeApi {
       { id: 's3', name: 'Finland Hysteria2', protocol: 'hysteria2', server: 'fi.example.com', port: 8443, link: '', outbound: { type: 'hysteria2' }, subscriptionId: 'sub1', latency: -1 }
     ],
     subscriptions: [
-      { id: 'sub1', name: 'My panel', url: 'https://panel.example.com/sub/abc', updatedAt: Date.now() - 3600_000, usage: { upload: 2e9, download: 18e9, total: 50e9 } }
+      {
+        id: 'sub1',
+        name: 'My provider',
+        url: 'https://panel.example.com/sub/abc',
+        updatedAt: Date.now() - 3600_000,
+        usage: { upload: 2e9, download: 18e9, total: 200e9, expire: Math.floor(Date.now() / 1000) + 26 * 86400 },
+        total: 5,
+        updateHours: 12,
+        skipped: [
+          { name: 'VLESS-REALITY-XHTTP', kind: 'vless / xhttp / reality', reason: 'Transport "xhttp" is not supported by the sing-box core' },
+          { name: '16423-IP', kind: 'vless / xhttp / reality', reason: 'Transport "xhttp" is not supported by the sing-box core' }
+        ]
+      }
     ],
     selectedServerId: 's1',
     appRules: [

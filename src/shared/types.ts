@@ -19,6 +19,14 @@ export interface ServerProfile {
   latency?: number
 }
 
+/** A config in a subscription that Bridge can't use, and why. */
+export interface SkippedConfig {
+  name: string
+  /** Protocol and transport as far as they could be read, e.g. "vless / xhttp". */
+  kind: string
+  reason: string
+}
+
 export interface Subscription {
   id: string
   name: string
@@ -27,6 +35,11 @@ export interface Subscription {
   /** Traffic info from the `subscription-userinfo` response header, when the panel sends it. */
   usage?: { upload: number; download: number; total: number; expire?: number }
   lastError?: string
+  /** How many configs the subscription contained last time (supported or not). */
+  total?: number
+  skipped?: SkippedConfig[]
+  /** Auto-update interval in hours (from the panel's `profile-update-interval` header, default 12). */
+  updateHours?: number
 }
 
 /**

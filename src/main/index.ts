@@ -2,11 +2,11 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shel
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Core } from './core'
-import { extractLinks, parseLink } from './parser'
+import { describeLink, extractLinks, parseLink } from './parser'
 import { Store } from './store'
 import { fetchSubscription } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
-import type { AppRule, ImportResult, RunningProcess, ServerProfile, Settings } from '../shared/types'
+import type { AppRule, ImportResult, RunningProcess, ServerProfile, Settings, SkippedConfig } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
 
@@ -41,54 +41,87 @@ core.on('log', (l) => send('log', l))
 
 // ---------- servers ----------
 
-function addLinks(links: string[], subscriptionId?: string): ImportResult {
-  const result: ImportResult = { added: 0, errors: [] }
-  const existing = new Set(store.state.servers.map((s) => s.link))
-  const parsed: ServerProfile[] = []
+/**
+ * Parses links into servers, collecting the ones that can't be used (with the reason).
+ * Servers whose link is in `keep` keep their id and last latency, so a subscription
+ * update doesn't lose the selection or test results.
+ */
+function parseLinks(links: string[], keep = new Map<string, ServerProfile>()): { servers: ServerProfile[]; skipped: SkippedConfig[] } {
+  const servers: ServerProfile[] = []
+  const skipped: SkippedConfig[] = []
+  const seen = new Set<string>()
   for (const link of links) {
-    if (existing.has(link)) continue
+    if (seen.has(link)) continue
+    seen.add(link)
     try {
       const p = parseLink(link)
-      p.subscriptionId = subscriptionId
-      parsed.push(p)
-      existing.add(link)
+      const old = keep.get(link)
+      servers.push(old ? { ...p, id: old.id, latency: old.latency } : p)
     } catch (e) {
-      result.errors.push(`${link.slice(0, 40)}...: ${e instanceof Error ? e.message : e}`)
+      skipped.push({ ...describeLink(link), reason: e instanceof Error ? e.message : String(e) })
     }
   }
-  result.added = parsed.length
+  return { servers, skipped }
+}
+
+function importResult(added: number, skipped: SkippedConfig[]): ImportResult {
+  return { added, errors: skipped.map((s) => `${s.name}: ${s.reason}`) }
+}
+
+function addLinks(links: string[]): ImportResult {
+  const existing = new Set(store.state.servers.map((s) => s.link))
+  const { servers, skipped } = parseLinks(links.filter((l) => !existing.has(l)))
   store.update((s) => {
-    s.servers.push(...parsed)
+    s.servers.push(...servers)
     if (!s.selectedServerId && s.servers.length) s.selectedServerId = s.servers[0].id
   })
   pushState()
-  return result
+  return importResult(servers.length, skipped)
 }
 
 async function refreshSubscription(id: string): Promise<ImportResult> {
   const sub = store.state.subscriptions.find((s) => s.id === id)
   if (!sub) throw new Error('Subscription not found')
   try {
-    const { links, usage } = await fetchSubscription(sub.url)
-    // Replace this subscription's servers, keeping the selection if the same link is still there.
-    const selectedLink = store.state.servers.find((s) => s.id === store.state.selectedServerId)?.link
+    const { links, usage, title, updateHours } = await fetchSubscription(sub.url)
+    const old = store.state.servers.filter((x) => x.subscriptionId === id)
+    const { servers, skipped } = parseLinks(links, new Map(old.map((x) => [x.link, x])))
+    for (const s of servers) s.subscriptionId = id
     store.update((s) => {
-      s.servers = s.servers.filter((x) => x.subscriptionId !== id)
-      Object.assign(sub, { updatedAt: Date.now(), usage, lastError: undefined })
-    })
-    const result = addLinks(links, id)
-    const again = store.state.servers.find((s) => s.link === selectedLink)
-    store.update((s) => {
-      if (again) s.selectedServerId = again.id
-      else if (!s.servers.some((x) => x.id === s.selectedServerId)) s.selectedServerId = s.servers[0]?.id
+      // Put the subscription's servers back where they were in the list.
+      const at = s.servers.findIndex((x) => x.subscriptionId === id)
+      const others = s.servers.filter((x) => x.subscriptionId !== id)
+      const insertAt = at < 0 ? others.length : s.servers.slice(0, at).filter((x) => x.subscriptionId !== id).length
+      s.servers = [...others.slice(0, insertAt), ...servers, ...others.slice(insertAt)]
+      if (!s.servers.some((x) => x.id === s.selectedServerId)) s.selectedServerId = s.servers[0]?.id
+      Object.assign(sub, {
+        name: sub.name || title || new URL(sub.url).hostname,
+        updatedAt: Date.now(),
+        usage,
+        lastError: undefined,
+        total: links.length,
+        skipped,
+        updateHours: updateHours ?? sub.updateHours
+      })
     })
     pushState()
-    return result
+    return importResult(servers.length, skipped)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     store.update(() => (sub.lastError = msg))
     pushState()
-    throw new Error(`Could not update "${sub.name}": ${msg}`)
+    throw new Error(`Could not update "${sub.name || sub.url}": ${msg}`)
+  }
+}
+
+const DEFAULT_UPDATE_HOURS = 12
+
+/** Updates every subscription whose update interval has passed. Errors are kept on the subscription. */
+async function refreshDueSubscriptions(): Promise<void> {
+  for (const sub of store.state.subscriptions) {
+    const hours = sub.updateHours || DEFAULT_UPDATE_HOURS
+    if (sub.updatedAt && Date.now() - sub.updatedAt < hours * 3600_000) continue
+    await refreshSubscription(sub.id).catch((e) => core.log(String(e instanceof Error ? e.message : e), 'warn'))
   }
 }
 
@@ -156,7 +189,8 @@ handle('testLatency', async (ids?: string[]) => {
 
 handle('addSubscription', async (name: string, url: string) => {
   const id = randomUUID()
-  store.update((s) => s.subscriptions.push({ id, name: name || new URL(url).hostname, url }))
+  // An empty name is filled from the panel's own title on the first update.
+  store.update((s) => s.subscriptions.push({ id, name, url }))
   pushState()
   return refreshSubscription(id)
 })
@@ -283,6 +317,9 @@ app.whenReady().then(async () => {
   tray = new Tray(nativeImage.createFromPath(iconPath()).resize({ width: 16, height: 16 }))
   tray.on('click', showWindow)
   updateTray()
+  // Keep subscriptions (configs, usage, expiry) current without the user pressing Update.
+  setTimeout(() => void refreshDueSubscriptions(), 10_000)
+  setInterval(() => void refreshDueSubscriptions(), 10 * 60_000)
 })
 
 app.on('before-quit', (e) => {
