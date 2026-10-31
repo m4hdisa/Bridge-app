@@ -1,0 +1,26 @@
+appId: app.bridge.client
+productName: Bridge
+directories:
+  output: dist
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources/core
+    to: core
+  - from: resources/rules
+    to: rules
+  - from: resources/icon.png
+    to: icon.png
+win:
+  target:
+    - nsis
+  icon: resources/icon.png
+  # Starts without admin; the app asks to restart as admin only for TUN / Per-App modes.
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Bridge

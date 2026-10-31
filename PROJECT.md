@@ -1,0 +1,190 @@
+# Bridge — مستندات پروژه
+
+کلاینت VPN ویندوز با پشتیبانی از VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC
+و **Split Tunneling بر اساس برنامه** (شبیه Proxifier): خودت انتخاب می‌کنی کدوم برنامه‌ها از VPN رد بشن.
+
+- نسخه: 0.1.0 (MVP)
+- آخرین به‌روزرسانی مستندات: 2026-10-31
+
+---
+
+## ۱. وضعیت فعلی (چی ساخته شده)
+
+| بخش | وضعیت |
+|---|---|
+| Import لینک‌ها (vless, vmess, trojan, ss, hysteria2/hy2, tuic) از کلیپ‌بورد یا Paste | ✅ |
+| Subscription (base64 یا لیست لینک) + نمایش حجم مصرفی و تاریخ انقضا | ✅ |
+| تست پینگ واقعی (URL test از داخل هر سرور، نه فقط TCP) | ✅ |
+| سه حالت اتصال: **Per-App** / **Full VPN (TUN)** / **System Proxy** | ✅ |
+| صفحه‌ی Apps: انتخاب برنامه از لیست برنامه‌های در حال اجرا یا انتخاب exe، با سه حالت Use VPN / Direct / Block | ✅ |
+| سایت‌های ایرانی مستقیم (.ir + لیست geoip/geosite ایران) | ✅ |
+| سرعت لحظه‌ای + **ترافیک هر برنامه** | ✅ |
+| Logs، Settings، آیکون Tray، بستن پنجره = رفتن به Tray | ✅ |
+| دکمه‌ی «Restart as admin» برای حالت‌هایی که Admin لازم دارن | ✅ |
+| فایل نصبی ویندوز (`dist\Bridge Setup 0.1.0.exe`) | ✅ |
+| UI | ساده (Basic)، انگلیسی — طبق تصمیم شما، بعداً عوض می‌شه |
+
+---
+
+## ۲. تکنولوژی‌ها و دلیل انتخاب
+
+| لایه | تکنولوژی | چرا |
+|---|---|---|
+| موتور VPN | **sing-box 1.14.4** (فایل `sing-box.exe` جدا) | همه‌ی پروتکل‌ها + TUN + routing بر اساس process رو خودش داره. به‌صورت برنامه‌ی جدا اجرا می‌شه پس لایسنس GPL اون روی کد ما اثر نمی‌ذاره |
+| اپلیکیشن دسکتاپ | **Electron 38** | به WebView2 نیاز نداره، روی هر ویندوز 10/11 کار می‌کنه |
+| UI | **React 19 + TypeScript** (بدون کتابخانه‌ی UI) | تغییر ظاهر راحته؛ همه‌ی رنگ‌ها در یک فایل CSS |
+| Build | electron-vite 4 + Vite 7 | سریع |
+| فایل نصبی | electron-builder 26 (NSIS) | استاندارد |
+| لیست ایران | [Chocolate4U/Iran-sing-box-rules](https://github.com/Chocolate4U/Iran-sing-box-rules) | همراه برنامه بسته‌بندی می‌شه، لازم نیست موقع اتصال دانلود بشه |
+
+---
+
+## ۳. معماری
+
+```
+┌───────────────────────────── Bridge.exe (Electron) ─────────────────────────────┐
+│                                                                                  │
+│  UI (React)  ◄── IPC (preload) ──►  Main process (Node.js)                       │
+│  src/renderer                        src/main                                    │
+│   - Home / Servers / Apps             - parser.ts   لینک → outbound sing-box     │
+│   - Logs / Settings                   - config.ts   ساخت config.json             │
+│                                       - core.ts     اجرا/توقف sing-box، آمار     │
+│                                       - system.ts   Admin، System Proxy، لیست برنامه‌ها │
+│                                       - store.ts    ذخیره‌ی تنظیمات (state.json)  │
+└───────────────────────────────────────────┬──────────────────────────────────────┘
+                                            │ spawn + Clash API (127.0.0.1، پورت تصادفی، با secret)
+                                            ▼
+                                     sing-box.exe ── wintun (حالت TUN)
+```
+
+### Per-App چطور کار می‌کنه
+1. حالت TUN همه‌ی ترافیک سیستم رو می‌گیره.
+2. sing-box برای هر کانکشن می‌فهمه مال کدوم exe‌ه (`process_path_regex`، بدون حساسیت به حروف بزرگ و کوچک).
+3. ترتیب rule‌ها: آدرس‌های داخلی → **Block** → **Direct** → ایران مستقیم → **Use VPN** (در حالت Per-App) → پیش‌فرض.
+4. پیش‌فرض: در Per-App برابر `direct` و در Full VPN برابر `proxy`.
+
+### DNS
+- همه‌ی DNSها با DoH (پیش‌فرض `1.1.1.1`) **از داخل VPN** می‌رن. این جلوی DNS مسموم ایران رو می‌گیره.
+- دامنه‌های `.ir` و geosite-ir با DNS خود سیستم resolve می‌شن.
+- فقط IPv4 (IPv6 در TUN گرفته می‌شه تا نشت نکنه).
+
+### محل فایل‌ها روی سیستم کاربر
+- تنظیمات: `%APPDATA%\bridge\state.json`
+- config ساخته‌شده‌ی sing-box: `%APPDATA%\bridge\core\config.json` (برای عیب‌یابی مفیده)
+
+---
+
+## ۴. ساختار پوشه‌ها
+
+```
+bridge-app/
+├─ PROJECT.md                ← همین فایل
+├─ package.json              ← دستورها و وابستگی‌ها
+├─ electron-builder.yml      ← تنظیمات فایل نصبی
+├─ resources/
+│  ├─ core/sing-box.exe      ← با npm run fetch-core دانلود می‌شه
+│  ├─ rules/*.srs            ← لیست‌های ایران
+│  └─ icon.png               ← آیکون موقت (با طراحی واقعی جایگزین کن)
+├─ scripts/
+│  ├─ fetch-core.mjs         ← دانلود sing-box و لیست ایران
+│  ├─ make-icon.mjs          ← ساخت آیکون موقت
+│  ├─ selftest.ts            ← تست آفلاین parser و config
+│  └─ coretest.ts            ← تست امن core (فقط 127.0.0.1)
+└─ src/
+   ├─ shared/types.ts        ← تایپ‌های مشترک + API بین UI و backend
+   ├─ main/                  ← backend (Node.js)
+   ├─ preload/               ← پل امن بین UI و backend
+   └─ renderer/              ← UI (React)
+      └─ src/
+         ├─ styles.css       ← همه‌ی رنگ‌ها و ظاهر (متغیرهای :root بالای فایل)
+         ├─ pages/           ← Home, Servers, Apps, Logs, Settings
+         └─ mock.ts          ← backend جعلی برای طراحی UI در مرورگر
+```
+
+---
+
+## ۵. دستورها (برای توسعه)
+
+| دستور | کار |
+|---|---|
+| `npm install` | نصب وابستگی‌ها (یک بار) |
+| `npm run fetch-core` | دانلود sing-box و لیست ایران |
+| `npm run dev` | اجرای برنامه در حالت توسعه |
+| `npm run dev:ui` | اجرای فقط UI در مرورگر (http://localhost:5199) با backend جعلی. **برای کار روی طراحی** |
+| `npm run selftest` | تست آفلاین parser و configها با `sing-box check` |
+| `npx tsx scripts/coretest.ts` | تست امن core (روی VPS هم بی‌خطره) |
+| `npm run typecheck` | بررسی خطاهای TypeScript |
+| `npm run dist` | ساخت فایل نصبی در `dist\` |
+
+---
+
+## ۶. تست‌ها
+
+### انجام‌شده روی VPS (بی‌خطر برای اتصال)
+- ✅ `selftest`: پارس ۱۰ نوع لینک + ۱۸ config که `sing-box check` همه رو تأیید کرد (هر سه حالت، با و بدون ایران)
+- ✅ `coretest`: اجرا و توقف sing-box، Clash API، رسیدن آمار، فلوی تست پینگ. **فقط روی 127.0.0.1 بود**: نه TUN و نه System Proxy.
+- ✅ اجرای برنامه‌ی Electron و نسخه‌ی نصبی، بدون خطا
+- ✅ UI در مرورگر با backend جعلی
+
+### ⚠️ تست‌هایی که باید روی سیستم شخصی انجام بدی (روی VPS انجام **نشده**)
+این تست‌ها شبکه‌ی ویندوز رو تغییر می‌دن (TUN یا System Proxy) و روی VPS ممکنه اتصال RDP رو قطع کنن.
+
+**آماده‌سازی:** فایل `dist\Bridge Setup 0.1.0.exe` رو به سیستم شخصی ببر و نصب کن. اگه SmartScreen هشدار داد، روی **More info** و بعد **Run anyway** بزن (برنامه هنوز امضای دیجیتال نداره).
+
+| # | تست | مراحل | نتیجه‌ی درست |
+|---|---|---|---|
+| 1 | Import و پینگ | لینک سرورت رو کپی کن، در Servers بزن **Import from clipboard** و بعد **Test all** | سرور اضافه بشه و عدد ms نشون بده |
+| 2 | System Proxy | Home → **System Proxy** → Connect. با مرورگر سایت `ifconfig.me` رو باز کن | IP سرور نشون داده بشه |
+| 3 | قطع System Proxy | Disconnect، بعد در Settings ویندوز → Network → Proxy | Proxy خاموش باشه و اینترنت عادی کار کنه |
+| 4 | Per-App | Home → **Per-App** → **Restart as admin**. در Apps کروم رو اضافه کن (Use VPN) و Connect بزن. در کروم و Edge سایت `ifconfig.me` رو باز کن | کروم IP سرور و Edge IP خودت رو نشون بده. در Home، کروم در جدول ترافیک باشه |
+| 5 | Full VPN | Home → **Full VPN** → Connect. یک برنامه رو در Apps روی Direct بذار | همه IP سرور، جز اون برنامه |
+| 6 | Block | یک برنامه رو روی Block بذار | اون برنامه اینترنت نداشته باشه |
+| 7 | ایران | در حالت Full VPN یک سایت `.ir` رو باز کن | سریع و مستقیم باز بشه |
+| 8 | **ایمنی (مهم)** | در حالت Full VPN، از Task Manager پروسه‌ی `sing-box.exe` رو End task کن | ظرف چند ثانیه اینترنت عادی برگرده و در Home پیام «Core stopped unexpectedly» بیاد |
+| 9 | بستن برنامه | در حالت وصل، از Tray روی Quit بزن | اینترنت عادی کار کنه و Proxy خاموش باشه |
+
+**اگه بعد از تست اینترنت قطع شد:** ۱) Disconnect یا Quit ۲) در Task Manager پروسه‌ی `sing-box.exe` رو ببند ۳) Settings ویندوز → Proxy → خاموش ۴) ری‌استارت.
+
+**گزارش به من:** شماره‌ی تست، اینکه چی دیدی، و در صورت خطا متن صفحه‌ی **Logs** (تیک «Warnings and errors only» رو بزن).
+
+---
+
+## ۷. محدودیت‌های فعلی (شناخته‌شده)
+
+1. **transportهای xhttp / kcp / quic** رو sing-box پشتیبانی نمی‌کنه. لینک‌هایی که این‌ها رو دارن با پیام خطا رد می‌شن (برای پشتیبانی باید Xray-core هم اضافه بشه).
+2. Subscription با فرمت Clash YAML یا sing-box JSON هنوز پشتیبانی نمی‌شه (فقط base64 و لیست لینک).
+3. در حالت Per-App، DNS همه‌ی برنامه‌ها از داخل VPN می‌ره. اگه سرور قطع باشه، DNS برنامه‌های Direct هم کار نمی‌کنه. راه‌حل آینده: FakeIP.
+4. برنامه‌های Store/UWP و سرویس‌هایی که داخل `svchost` اجرا می‌شن با exe قابل انتخاب نیستن.
+5. هر بار برای حالت TUN پنجره‌ی UAC (Admin) میاد. راه‌حل آینده: Windows Service.
+6. امضای دیجیتال نداره، پس SmartScreen و گاهی آنتی‌ویروس هشدار می‌دن.
+7. ترافیک هر برنامه هر ۱ ثانیه خونده می‌شه، پس کانکشن‌های خیلی کوتاه ممکنه در جدول دیده نشن.
+
+---
+
+## ۸. Roadmap (پیشنهادی)
+
+| فاز | کار |
+|---|---|
+| **الان** | تست‌های بخش ۶ روی سیستم شخصی و رفع باگ‌ها |
+| بعدی | Windows Service (حذف UAC)، FakeIP برای DNS، Clash/sing-box subscription، آپدیت خودکار subscription |
+| بعدی | طراحی نهایی UI و UX (شما) + فارسی و RTL (در صورت نیاز) |
+| بعدی | اضافه کردن Xray-core برای xhttp و Fragment |
+| انتشار | امضای دیجیتال، Auto-update، سایت دانلود |
+
+---
+
+## ۹. تصمیم‌ها
+
+| تاریخ | تصمیم | تصمیم‌گیرنده |
+|---|---|---|
+| 2026-10-31 | Stack: Electron + React + TypeScript + sing-box (subprocess) | Claude (ساختار کلی به عهده‌ی Claude) |
+| 2026-10-31 | UI فعلاً Basic و انگلیسی | شما |
+| 2026-10-31 | اسم برنامه: Bridge (موقت) | شما |
+| 2026-10-31 | تست‌هایی که شبکه رو تغییر می‌دن فقط روی سیستم شخصی انجام بشن | شما |
+| 2026-10-31 | حالت پیش‌فرض: Per-App، با ایران مستقیم روشن | Claude |
+| 2026-10-31 | برنامه بدون Admin باز می‌شه و فقط برای TUN درخواست Admin می‌کنه | Claude |
+
+### سؤال‌های باز (نیاز به تصمیم شما)
+1. برنامه تجاری می‌شه یا رایگان و متن‌باز؟ (روی لایسنس و امضای دیجیتال اثر داره)
+2. امضای دیجیتال (Code Signing Certificate) هزینه داره. کِی بخریم؟
+3. UI نهایی فارسی و RTL باشه یا دو زبانه؟
