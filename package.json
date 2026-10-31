@@ -5,6 +5,8 @@
   "description": "Windows VPN client (VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC) with per-app routing",
   "main": "./out/main/index.js",
   "private": true,
+  "license": "GPL-3.0-or-later",
+  "author": "m4hdisa",
   "scripts": {
     "fetch-core": "node scripts/fetch-core.mjs",
     "make-icon": "node scripts/make-icon.mjs",

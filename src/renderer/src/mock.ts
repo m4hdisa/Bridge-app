@@ -122,7 +122,7 @@ export function createMockBridge(): BridgeApi {
       })
       log('Mock: connected')
       // Like the real app: the exit location arrives a moment after connecting.
-      setTimeout(() => setStatus({ ...status, exit: { ip: '185.244.25.12', countryCode: 'DE', country: 'Germany', city: 'Frankfurt am Main' } }), 1500)
+      setTimeout(() => setStatus({ ...status, exit: { ip: '203.0.113.24', countryCode: 'DE', country: 'Germany', city: 'Frankfurt am Main' } }), 1500)
       total = { up: 0, down: 0 }
       timer = setInterval(() => {
         const up = Math.random() * 60_000
