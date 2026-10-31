@@ -37,7 +37,6 @@ const settings: Settings = {
   mode: 'tun',
   bypassIran: true,
   mixedPort: 2080,
-  remoteDns: 'https://1.1.1.1/dns-query',
   testUrl: 'https://www.gstatic.com/generate_204',
   logLevel: 'info'
 }
@@ -93,6 +92,18 @@ else fail('base64 subscription', `expected ${Object.keys(SAMPLES).length}, got $
   const stale = { ...p, outbound: { ...p.outbound, tls: { enabled: true, server_name: 'x.com', utls: { enabled: true, fingerprint: 'unsafe' } } } }
   check('stale server with fp=unsafe', buildConfig({ server: stale, settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
 }
+for (const [label, link] of [
+  ['VLESS Encryption rejected with a clear error', 'vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?encryption=mlkem768x25519plus.native.0rtt.abc&type=tcp'],
+  ['TCP headerType=http rejected with a clear error', 'vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:80?encryption=none&type=tcp&headerType=http&host=a.com']
+]) {
+  try {
+    parseLink(link)
+    fail(label, 'no error thrown')
+  } catch (e) {
+    if (/not supported/.test(String(e))) ok(`${label}: "${(e as Error).message}"`)
+    else fail(label, e)
+  }
+}
 try {
   parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:443?type=xhttp&security=tls')
   fail('xhttp should be rejected', 'no error thrown')
@@ -114,7 +125,7 @@ for (const mode of ['system-proxy', 'tun', 'per-app'] as ConnectionMode[]) {
     )
   }
 }
-check('DoH by hostname', buildConfig({ server: profiles[0], settings: { ...settings, remoteDns: 'https://dns.google/dns-query' }, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules') }))
+check('explicit local DNS server', buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), localDns: '192.168.1.1' }))
 check('latency test config', buildTestConfig(profiles, { port: 19091, secret: 'x' }))
 
 rmSync(dir, { recursive: true, force: true })

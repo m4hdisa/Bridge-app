@@ -30,6 +30,7 @@ const api: BridgeApi = {
   pickExe: invoke('pickExe'),
   connect: invoke('connect'),
   disconnect: invoke('disconnect'),
+  checkHealth: invoke('checkHealth'),
   isAdmin: invoke('isAdmin'),
   relaunchAsAdmin: invoke('relaunchAsAdmin'),
   onState: subscribe('state'),

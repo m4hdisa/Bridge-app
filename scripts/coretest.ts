@@ -59,6 +59,11 @@ async function main() {
   await new Promise((r) => setTimeout(r, 2500))
   check(stats !== undefined, 'traffic stats arrive from the Clash API')
 
+  await core.checkHealth()
+  const h = core.status.health
+  check(h?.server?.ok === false && !!h.server.error, `health: dead VPN server reported as down (${h?.server?.error})`)
+  check(h?.internet?.ok === true, `health: direct internet reported as up (${h?.internet?.latency} ms)`)
+
   console.log('Stop')
   await core.stop()
   check(core.status.state === 'stopped', 'core stopped')

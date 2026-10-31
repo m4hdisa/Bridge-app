@@ -55,8 +55,6 @@ export interface Settings {
   bypassIran: boolean
   /** Local HTTP+SOCKS port used in system-proxy mode. */
   mixedPort: number
-  /** DNS-over-HTTPS server used for anything that goes through the VPN. */
-  remoteDns: string
   /** URL used for real latency tests. */
   testUrl: string
   logLevel: 'debug' | 'info' | 'warn' | 'error'
@@ -72,13 +70,33 @@ export interface AppState {
 
 export type CoreState = 'stopped' | 'starting' | 'running' | 'stopping'
 
+export interface HealthCheck {
+  ok: boolean
+  /** Round-trip time of a real request, in ms. */
+  latency?: number
+  error?: string
+  checkedAt: number
+}
+
+export interface Health {
+  /** A request through the VPN server. */
+  server?: HealthCheck
+  /** A request over the normal internet (what Direct apps use). */
+  internet?: HealthCheck
+}
+
 export interface CoreStatus {
   state: CoreState
   mode?: ConnectionMode
   serverId?: string
   startedAt?: number
   error?: string
+  /** Checked right after connecting and then every 20 seconds while connected. */
+  health?: Health
 }
+
+/** Where an app's open connections go: through the VPN, direct, or some of each. */
+export type AppRoute = 'vpn' | 'direct' | 'mixed'
 
 export interface AppTraffic {
   path: string
@@ -86,6 +104,7 @@ export interface AppTraffic {
   upload: number
   download: number
   connections: number
+  route?: AppRoute
 }
 
 export interface TrafficStats {
@@ -140,6 +159,8 @@ export interface BridgeApi {
 
   connect(): Promise<void>
   disconnect(): Promise<void>
+  /** Re-checks server and internet health now (result arrives through onStatus). */
+  checkHealth(): Promise<void>
 
   isAdmin(): Promise<boolean>
   relaunchAsAdmin(): Promise<void>

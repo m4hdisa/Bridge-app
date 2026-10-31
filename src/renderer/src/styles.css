@@ -74,6 +74,20 @@ textarea { resize: vertical; font-family: Consolas, monospace; font-size: 12px; 
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
 .dot.on { background: var(--good); }
 .dot.busy { background: var(--mid); }
+.dot.bad { background: var(--bad); }
+
+.health.bad { border-color: var(--bad); }
+.health .row.head { padding: 0 0 8px; border-bottom: none; }
+.health .row.head h2 { margin: 0; }
+.health-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+
+.route { font-size: 12px; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--border); }
+.route.vpn { color: var(--accent); border-color: var(--accent); }
+.route.direct { color: var(--muted); }
+.route.mixed { color: var(--mid); border-color: var(--mid); }
+.app-cell { display: inline-flex; align-items: center; gap: 8px; }
+.app-icon.small { width: 18px; height: 18px; }
+.table tr.idle td { color: var(--muted); }
 
 .content { flex: 1; overflow-y: auto; padding: 24px 28px; }
 .page { max-width: 920px; }

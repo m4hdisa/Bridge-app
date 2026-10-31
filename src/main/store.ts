@@ -3,11 +3,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname } from 'node:path'
 import type { AppState, Settings } from '../shared/types'
 
+
 export const DEFAULT_SETTINGS: Settings = {
   mode: 'per-app',
   bypassIran: true,
   mixedPort: 2080,
-  remoteDns: 'https://1.1.1.1/dns-query',
   testUrl: 'https://www.gstatic.com/generate_204',
   logLevel: 'info'
 }
@@ -24,11 +24,12 @@ export class Store {
     if (!existsSync(this.file)) return empty
     try {
       const saved = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<AppState>
-      return {
-        ...empty,
-        ...saved,
-        settings: { ...DEFAULT_SETTINGS, ...saved.settings }
+      // Only keep known settings, so options removed in newer versions disappear.
+      const settings = { ...DEFAULT_SETTINGS }
+      for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
+        if (saved.settings?.[key] !== undefined) Object.assign(settings, { [key]: saved.settings[key] })
       }
+      return { ...empty, ...saved, settings }
     } catch {
       // Keep the broken file for inspection and start fresh.
       renameSync(this.file, this.file + '.broken')

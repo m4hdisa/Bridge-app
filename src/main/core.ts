@@ -4,9 +4,10 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildConfig, buildTestConfig, writeAppRuleSets, type ClashApi } from './config'
-import { clearSystemProxy, freePort, setSystemProxy } from './system'
-import type { AppRule, AppTraffic, CoreStatus, LogLine, ServerProfile, Settings, TrafficStats } from '../shared/types'
+import { buildConfig, buildTestConfig, withServerIp, writeAppRuleSets, type ClashApi } from './config'
+import { ServerResolver } from './resolve'
+import { clearSystemProxy, flushDns, freePort, physicalDnsServer, setSystemProxy } from './system'
+import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats } from '../shared/types'
 
 export interface CorePaths {
   singBox: string
@@ -21,10 +22,12 @@ interface ClashConnection {
   id: string
   upload: number
   download: number
+  chains?: string[]
   metadata: { processPath?: string }
 }
 
 const MAX_LOGS = 1000
+const HEALTH_INTERVAL_MS = 20000
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
 
@@ -84,13 +87,31 @@ export class Core extends EventEmitter {
   private api?: ClashApi
   private proxyPort?: number
   private statsTimer?: NodeJS.Timeout
+  private healthTimer?: NodeJS.Timeout
+  private settings?: Settings
   private lastTotals = { up: 0, down: 0, at: 0 }
   private seenConns = new Map<string, { path: string; up: number; down: number }>()
   private appTotals = new Map<string, AppTraffic>()
 
+  private resolver: ServerResolver
+
   constructor(private paths: CorePaths) {
     super()
     mkdirSync(paths.dataDir, { recursive: true })
+    this.resolver = new ServerResolver(join(paths.dataDir, 'server-addresses.json'), (text, level) => this.log(text, level))
+  }
+
+  /**
+   * Returns the server with its hostname replaced by a safely resolved IP (see resolve.ts).
+   * Must run before TUN starts, so the lookups use the real network.
+   */
+  private async pinAddress(server: ServerProfile, quiet = false): Promise<ServerProfile> {
+    const host = server.outbound.server
+    if (typeof host !== 'string') return server
+    const r = await this.resolver.resolve(host)
+    if (!r) return server
+    if (!quiet && r.ip !== host) this.log(`Server ${host} -> ${r.ip} (${r.source})`)
+    return { ...server, outbound: withServerIp(server.outbound, r.ip) }
   }
 
   log(text: string, level: LogLine['level'] = 'info'): void {
@@ -115,16 +136,24 @@ export class Core extends EventEmitter {
     if (this.status.state !== 'stopped') await this.stop()
     if (!existsSync(this.paths.singBox)) throw new Error(`sing-box not found at ${this.paths.singBox}`)
     this.setStatus({ state: 'starting', mode: settings.mode, serverId: server.id })
+    this.settings = settings
     try {
       const api: ClashApi = { port: await freePort(), secret: randomUUID() }
+      // Direct traffic must resolve with the real network's DNS; read it before TUN takes over.
+      const [localDns, pinned] = await Promise.all([
+        settings.mode !== 'system-proxy' ? physicalDnsServer() : Promise.resolve(undefined),
+        this.pinAddress(server)
+      ])
+      if (localDns) this.log(`Using network DNS ${localDns} for direct traffic`)
       const config = buildConfig({
-        server,
+        server: pinned,
         settings,
         appRules,
         clashApi: api,
         rulesDir: existsSync(join(this.paths.rulesDir, 'geosite-ir.srs')) ? this.paths.rulesDir : undefined,
         cacheFile: join(this.paths.dataDir, 'cache.db'),
-        appRulesDir: this.appRulesDir
+        appRulesDir: this.appRulesDir,
+        localDns
       })
       const configFile = join(this.paths.dataDir, 'config.json')
       writeFileSync(configFile, JSON.stringify(config, null, 2))
@@ -141,6 +170,8 @@ export class Core extends EventEmitter {
       this.resetStats()
       this.statsTimer = setInterval(() => void this.pollStats(), 1000)
       this.setStatus({ state: 'running', mode: settings.mode, serverId: server.id, startedAt: Date.now() })
+      void this.checkHealth()
+      this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       this.log(msg, 'error')
@@ -148,6 +179,32 @@ export class Core extends EventEmitter {
       this.setStatus({ state: 'stopped', error: msg })
       throw e
     }
+  }
+
+  /** Runs a real request through one outbound ("proxy" = VPN server, "direct" = normal internet). */
+  private async probe(api: ClashApi, outbound: string, testUrl: string): Promise<HealthCheck> {
+    const checkedAt = Date.now()
+    try {
+      const r = await clashGet<{ delay: number }>(api, `/proxies/${outbound}/delay?timeout=5000&url=${encodeURIComponent(testUrl)}`, 7000)
+      return { ok: true, latency: r.delay, checkedAt }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { ok: false, error: /timeout|504|408/i.test(msg) ? 'No response (timeout)' : msg.replace(/^Clash API [^:]+: /, ''), checkedAt }
+    }
+  }
+
+  /** Checks the VPN server and the normal internet, and reports the result in status.health. */
+  async checkHealth(): Promise<void> {
+    const api = this.api
+    if (!api || this.status.state !== 'running') return
+    const testUrl = this.settings?.testUrl || 'https://www.gstatic.com/generate_204'
+    const [server, internet] = await Promise.all([this.probe(api, 'proxy', testUrl), this.probe(api, 'direct', testUrl)])
+    if (this.api !== api || this.status.state !== 'running') return
+    const prev = this.status.health?.server
+    if (prev && prev.ok !== server.ok) {
+      this.log(server.ok ? `VPN server is responding again (${server.latency} ms)` : `VPN server is not responding: ${server.error}`, server.ok ? 'info' : 'warn')
+    }
+    this.setStatus({ ...this.status, health: { server, internet } })
   }
 
   private get appRulesDir(): string {
@@ -186,7 +243,9 @@ export class Core extends EventEmitter {
 
   private async cleanup(): Promise<void> {
     if (this.statsTimer) clearInterval(this.statsTimer)
-    this.statsTimer = undefined
+    if (this.healthTimer) clearInterval(this.healthTimer)
+    this.statsTimer = this.healthTimer = undefined
+    const usedTun = !!this.child && this.settings?.mode !== 'system-proxy'
     if (this.proxyPort !== undefined) {
       await clearSystemProxy(this.proxyPort).catch((e) => this.log(`Could not clear system proxy: ${e}`, 'warn'))
       this.proxyPort = undefined
@@ -201,11 +260,14 @@ export class Core extends EventEmitter {
         child.kill()
       })
     }
+    // Windows may have cached fake IPs (198.18.x.x) from the TUN DNS; drop them.
+    if (usedTun) await flushDns()
   }
 
   private onUnexpectedExit(code: number | null): void {
     this.log(`sing-box stopped unexpectedly (exit code ${code})`, 'error')
     this.child = undefined
+    if (this.settings?.mode !== 'system-proxy') void flushDns()
     void this.cleanup().then(() => this.setStatus({ state: 'stopped', error: 'Core stopped unexpectedly, see Logs' }))
   }
 
@@ -227,8 +289,11 @@ export class Core extends EventEmitter {
       this.lastTotals = { up: snap.uploadTotal, down: snap.downloadTotal, at: now }
 
       const live = new Map<string, number>()
+      const routes = new Map<string, Set<string>>()
       for (const c of snap.connections || []) {
         const path = c.metadata.processPath || ''
+        const outbound = c.chains?.[0]
+        if (outbound) routes.set(path, (routes.get(path) || new Set()).add(outbound))
         const prev = this.seenConns.get(c.id) || { path, up: 0, down: 0 }
         let app = this.appTotals.get(path)
         if (!app) {
@@ -242,7 +307,12 @@ export class Core extends EventEmitter {
       }
       const liveIds = new Set((snap.connections || []).map((c) => c.id))
       for (const id of this.seenConns.keys()) if (!liveIds.has(id)) this.seenConns.delete(id)
-      for (const app of this.appTotals.values()) app.connections = live.get(app.path) || 0
+      for (const app of this.appTotals.values()) {
+        app.connections = live.get(app.path) || 0
+        // Keep the last known route when the app has no open connections right now.
+        const r = routes.get(app.path)
+        if (r) app.route = (r.size > 1 ? 'mixed' : r.has('proxy') ? 'vpn' : 'direct') as AppRoute
+      }
 
       const stats: TrafficStats = {
         upSpeed,
@@ -269,7 +339,15 @@ export class Core extends EventEmitter {
     mkdirSync(workDir, { recursive: true })
 
     // If sing-box refuses one server ("initialize outbound[N]: ..."), mark it failed and retry without it.
-    let testable = [...servers]
+    // Resolve each distinct server host once, safely, like a real connection does.
+    const lookups = new Map<string, Promise<ServerProfile>>()
+    let testable = await Promise.all(
+      servers.map((s) => {
+        const key = String(s.outbound.server)
+        if (!lookups.has(key)) lookups.set(key, this.pinAddress(s, true))
+        return lookups.get(key)!.then((p) => ({ ...s, outbound: withServerIp(s.outbound, String(p.outbound.server)) }))
+      })
+    )
     let child: ChildProcess | undefined
     let api: ClashApi = { port: 0, secret: '' }
     while (!child && testable.length) {

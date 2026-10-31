@@ -20,6 +20,8 @@ export interface BuildOptions {
   cacheFile?: string
   /** Folder holding the per-app rule-set files written by writeAppRuleSets(). */
   appRulesDir: string
+  /** The physical network's DNS server (e.g. the router). Falls back to sing-box's "local" resolver. */
+  localDns?: string
 }
 
 type Json = Record<string, unknown>
@@ -27,6 +29,24 @@ type Json = Record<string, unknown>
 const APP_ACTIONS: AppAction[] = ['block', 'direct', 'proxy']
 /** A regex no exe path can match, so an empty rule-set file is still valid. */
 const NEVER_MATCH = '^:no-app:$'
+
+/**
+ * Points an outbound at an already-resolved IP while keeping the original domain
+ * where the server or CDN needs it (TLS SNI, WebSocket/HTTP Host), so sing-box
+ * never has to resolve the server name itself.
+ */
+export function withServerIp<T extends Record<string, unknown>>(outbound: T, ip: string): T {
+  const host = outbound.server
+  if (typeof host !== 'string' || host === ip) return outbound
+  const o = structuredClone(outbound) as Record<string, any>
+  o.server = ip
+  if (o.tls?.enabled && !o.tls.server_name) o.tls.server_name = host
+  const t = o.transport
+  if (t?.type === 'ws' && !t.headers?.Host) t.headers = { ...t.headers, Host: host }
+  if (t?.type === 'http' && !t.host) t.host = [host]
+  if (t?.type === 'httpupgrade' && !t.host) t.host = host
+  return o as T
+}
 
 /** Case-insensitive exact match on a Windows exe path. */
 export function processPathRegex(path: string): string {
@@ -56,14 +76,28 @@ export function writeAppRuleSets(dir: string, rules: AppRule[]): void {
   }
 }
 
-function remoteDnsServer(url: string): Json {
-  const u = new URL(url)
-  const server: Json = { type: 'https', tag: 'dns-remote', server: u.hostname.replace(/^\[|\]$/g, ''), detour: 'proxy' }
-  if (u.port) server.server_port = Number(u.port)
-  if (u.pathname && u.pathname !== '/dns-query') server.path = u.pathname
-  // A DoH server given by name needs a resolver for its own hostname.
-  if (!/^[\d.:]+$/.test(String(server.server))) server.domain_resolver = 'dns-local'
-  return server
+/**
+ * DNS design (TUN modes):
+ * Windows resolves names for every app through one service (svchost), so DNS can't
+ * be routed per app. Instead every A/AAAA query gets an instant local fake IP. When
+ * an app then connects to that fake IP, sing-box knows the app *and* the domain:
+ *  - VPN apps:    the domain is sent to the server and resolved there (no Iranian DNS poisoning)
+ *  - direct apps: the domain is resolved with the system's real DNS (dns-local)
+ * So direct apps never depend on the VPN server being up.
+ */
+function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
+  const local: Json = o.localDns ? { type: 'udp', tag: 'dns-local', server: o.localDns } : { type: 'local', tag: 'dns-local' }
+  const rules: Json[] = []
+  if (o.settings.bypassIran) {
+    rules.push({ domain_suffix: ['.ir'], server: 'dns-local' })
+    if (iranRules) rules.push({ rule_set: ['geosite-ir'], server: 'dns-local' })
+  }
+  const servers: Json[] = [local]
+  if (useTun) {
+    servers.push({ type: 'fakeip', tag: 'dns-fake', inet4_range: '198.18.0.0/15' })
+    rules.push({ query_type: ['A', 'AAAA'], server: 'dns-fake' })
+  }
+  return { servers, rules, final: 'dns-local', strategy: 'ipv4_only' }
 }
 
 /** Builds the config and writes the app rule-set files it points to. */
@@ -89,7 +123,6 @@ export function buildConfig(o: BuildOptions): Json {
     })
   }
 
-  const dnsRules: Json[] = []
   const routeRules: Json[] = [
     { action: 'sniff' },
     { protocol: 'dns', action: 'hijack-dns' },
@@ -99,12 +132,8 @@ export function buildConfig(o: BuildOptions): Json {
   routeRules.push({ rule_set: ['apps-block'], action: 'reject' })
   routeRules.push({ rule_set: ['apps-direct'], outbound: 'direct' })
   if (settings.bypassIran) {
-    dnsRules.push({ domain_suffix: ['.ir'], server: 'dns-local' })
     routeRules.push({ domain_suffix: ['.ir'], outbound: 'direct' })
-    if (iranRules) {
-      dnsRules.push({ rule_set: ['geosite-ir'], server: 'dns-local' })
-      routeRules.push({ rule_set: ['geosite-ir', 'geoip-ir'], outbound: 'direct' })
-    }
+    if (iranRules) routeRules.push({ rule_set: ['geosite-ir', 'geoip-ir'], outbound: 'direct' })
   }
   if (settings.mode === 'per-app') {
     routeRules.push({ rule_set: ['apps-proxy'], outbound: 'proxy' })
@@ -135,16 +164,12 @@ export function buildConfig(o: BuildOptions): Json {
   const experimental: Json = {
     clash_api: { external_controller: `127.0.0.1:${o.clashApi.port}`, secret: o.clashApi.secret }
   }
-  if (o.cacheFile) experimental.cache_file = { enabled: true, path: o.cacheFile }
+  // store_fakeip keeps fake IP mappings across reconnects, so apps that cached one keep working.
+  if (o.cacheFile) experimental.cache_file = { enabled: true, path: o.cacheFile, store_fakeip: useTun }
 
   return {
     log: { level: settings.logLevel, timestamp: true },
-    dns: {
-      servers: [remoteDnsServer(settings.remoteDns), { type: 'local', tag: 'dns-local' }],
-      rules: dnsRules,
-      final: 'dns-remote',
-      strategy: 'ipv4_only'
-    },
+    dns: buildDns(o, useTun, !!iranRules),
     inbounds,
     outbounds: [
       { ...normalizeOutbound(o.server.outbound), tag: 'proxy' },
@@ -167,7 +192,8 @@ export function buildTestConfig(servers: ServerProfile[], clashApi: ClashApi): J
       { type: 'direct', tag: 'direct' },
       ...servers.map((s) => ({ ...normalizeOutbound(s.outbound), tag: s.id }))
     ],
-    route: { final: 'direct', default_domain_resolver: 'dns-local' },
+    // auto_detect_interface keeps the test's traffic off the running VPN's TUN adapter.
+    route: { final: 'direct', default_domain_resolver: 'dns-local', auto_detect_interface: true },
     experimental: {
       clash_api: { external_controller: `127.0.0.1:${clashApi.port}`, secret: clashApi.secret }
     }

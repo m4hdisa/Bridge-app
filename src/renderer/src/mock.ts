@@ -20,7 +20,7 @@ export function createMockBridge(): BridgeApi {
       { id: 'r2', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
       { id: 'r3', name: 'steam.exe', path: 'C:\\Program Files (x86)\\Steam\\steam.exe', action: 'direct', enabled: false }
     ],
-    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, remoteDns: 'https://1.1.1.1/dns-query', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info' }
+    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info' }
   }
   let status: CoreStatus = { state: 'stopped' }
   const logs: LogLine[] = [{ time: Date.now(), level: 'info', text: 'Mock backend: running in the browser, nothing is real.' }]
@@ -92,7 +92,14 @@ export function createMockBridge(): BridgeApi {
     connect: async () => {
       setStatus({ state: 'starting', mode: state.settings.mode })
       await wait(700)
-      setStatus({ state: 'running', mode: state.settings.mode, serverId: state.selectedServerId, startedAt: Date.now() })
+      const now = Date.now()
+      setStatus({
+        state: 'running',
+        mode: state.settings.mode,
+        serverId: state.selectedServerId,
+        startedAt: now,
+        health: { server: { ok: true, latency: 412, checkedAt: now }, internet: { ok: true, latency: 96, checkedAt: now } }
+      })
       log('Mock: connected')
       total = { up: 0, down: 0 }
       timer = setInterval(() => {
@@ -106,8 +113,9 @@ export function createMockBridge(): BridgeApi {
           upTotal: total.up,
           downTotal: total.down,
           apps: [
-            { path: 'chrome.exe', name: 'chrome.exe', upload: total.up * 0.7, download: total.down * 0.8, connections: 12 },
-            { path: 'Telegram.exe', name: 'Telegram.exe', upload: total.up * 0.3, download: total.down * 0.2, connections: 3 }
+            { path: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', name: 'chrome.exe', upload: total.up * 0.6, download: total.down * 0.7, connections: 12, route: 'vpn' },
+            { path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', name: 'Telegram.exe', upload: total.up * 0.3, download: total.down * 0.2, connections: 3, route: 'vpn' },
+            { path: 'C:\\Program Files (x86)\\Steam\\steam.exe', name: 'steam.exe', upload: total.up * 0.1, download: total.down * 0.1, connections: 0, route: 'direct' }
           ]
         }
         listeners.stats.forEach((l) => l(stats))
@@ -117,6 +125,19 @@ export function createMockBridge(): BridgeApi {
       clearInterval(timer)
       setStatus({ state: 'stopped' })
       log('Mock: disconnected')
+    },
+    // Alternates between healthy and "server down" so both states can be seen in the UI.
+    checkHealth: async () => {
+      await wait(600)
+      const now = Date.now()
+      const down = status.health?.server?.ok
+      setStatus({
+        ...status,
+        health: {
+          server: down ? { ok: false, error: 'No response (timeout)', checkedAt: now } : { ok: true, latency: 398, checkedAt: now },
+          internet: { ok: true, latency: 88, checkedAt: now }
+        }
+      })
     },
     isAdmin: async () => true,
     relaunchAsAdmin: async () => undefined,

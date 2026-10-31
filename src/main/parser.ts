@@ -166,6 +166,10 @@ function buildTransport(o: TransportOptions): Record<string, unknown> | undefine
     case 'tcp':
     case 'raw':
     case '':
+      // Xray's TCP "HTTP header" camouflage has no sing-box equivalent.
+      if ((o.headerType || 'none').toLowerCase() === 'http') {
+        throw new UnsupportedLinkError('TCP with HTTP header camouflage (headerType=http) is Xray-only, not supported by the sing-box core')
+      }
       return undefined
     case 'ws': {
       let path = o.path || '/'
@@ -211,6 +215,10 @@ function parseVless(link: string): ServerProfile {
   const u = parseUrl(link)
   const p = u.params
   if (!u.user) throw new Error('VLESS link is missing the UUID')
+  // Xray's post-quantum "VLESS Encryption" (encryption=mlkem768x25519plus...) is not in sing-box;
+  // connecting without it just times out, so say so instead.
+  const encryption = (p.get('encryption') || 'none').toLowerCase()
+  if (encryption !== 'none') throw new UnsupportedLinkError(`VLESS Encryption ("${encryption.split('.')[0]}") is Xray-only, not supported by the sing-box core`)
   const outbound: Outbound = compact({
     type: 'vless' as const,
     server: u.host,

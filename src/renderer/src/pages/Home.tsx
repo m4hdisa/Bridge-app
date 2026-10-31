@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { ConnectionMode } from '../../../shared/types'
+import type { AppRoute, ConnectionMode, CoreStatus, HealthCheck } from '../../../shared/types'
 import { api, type PageProps } from '../App'
-import { bytes, duration, speed } from '../format'
+import { ago, bytes, duration, speed } from '../format'
 
 const MODES: { id: ConnectionMode; label: string; help: string }[] = [
   { id: 'per-app', label: 'Per-App', help: 'Only the apps you choose on the Apps page use the VPN. Everything else uses your normal internet.' },
@@ -77,6 +77,8 @@ export function Home({ state, status, stats, run, go }: PageProps) {
         )}
       </div>
 
+      {running && <HealthCard status={status} mode={state.settings.mode} run={run} />}
+
       {stats && (
         <>
           <div className="stat-row">
@@ -84,22 +86,31 @@ export function Home({ state, status, stats, run, go }: PageProps) {
             <Stat label="Upload" value={speed(stats.upSpeed)} sub={`${bytes(stats.upTotal)} total`} />
           </div>
           <div className="card">
-            <h2>Traffic by app</h2>
+            <h2>Apps using the network</h2>
             <table className="table">
               <thead>
-                <tr><th>App</th><th>Connections</th><th>Download</th><th>Upload</th></tr>
+                <tr><th>App</th><th>Route</th><th>Open</th><th>Download</th><th>Upload</th></tr>
               </thead>
               <tbody>
-                {stats.apps.map((a) => (
-                  <tr key={a.path}>
-                    <td title={a.path}>{a.name}</td>
-                    <td>{a.connections}</td>
-                    <td>{bytes(a.download)}</td>
-                    <td>{bytes(a.upload)}</td>
-                  </tr>
-                ))}
+                {stats.apps.map((a) => {
+                  const icon = state.appRules.find((r) => r.path.toLowerCase() === a.path.toLowerCase())?.icon
+                  return (
+                    <tr key={a.path} className={a.connections ? '' : 'idle'}>
+                      <td title={a.path}>
+                        <span className="app-cell">
+                          {icon ? <img className="app-icon small" src={icon} alt="" /> : <span className="app-icon small placeholder" />}
+                          {a.name}
+                        </span>
+                      </td>
+                      <td><RouteBadge route={a.route} /></td>
+                      <td>{a.connections}</td>
+                      <td>{bytes(a.download)}</td>
+                      <td>{bytes(a.upload)}</td>
+                    </tr>
+                  )
+                })}
                 {!stats.apps.length && (
-                  <tr><td colSpan={4} className="muted">No traffic yet</td></tr>
+                  <tr><td colSpan={5} className="muted">No traffic yet</td></tr>
                 )}
               </tbody>
             </table>
@@ -108,6 +119,59 @@ export function Home({ state, status, stats, run, go }: PageProps) {
       )}
     </div>
   )
+}
+
+function HealthCard({ status, mode, run }: { status: CoreStatus; mode: ConnectionMode; run: PageProps['run'] }) {
+  const [checking, setChecking] = useState(false)
+  const h = status.health
+  const serverDown = h?.server && !h.server.ok
+  const internetDown = h?.internet && !h.internet.ok
+  return (
+    <div className={'card health' + (serverDown ? ' bad' : '')}>
+      <div className="row head">
+        <h2 className="grow">Connection health</h2>
+        <button
+          disabled={checking}
+          onClick={async () => {
+            setChecking(true)
+            await run(() => api.checkHealth())
+            setChecking(false)
+          }}
+        >
+          {checking ? 'Checking…' : 'Check now'}
+        </button>
+      </div>
+      <HealthRow label="VPN server" check={h?.server} />
+      <HealthRow label="Internet (direct)" check={h?.internet} />
+      {serverDown && (
+        <p className="error small">
+          {mode === 'per-app'
+            ? 'The VPN server is not responding. Apps set to "Use VPN" are offline; other apps still use your normal internet.'
+            : 'The VPN server is not responding, so apps going through the VPN are offline. Try another server or Per-App mode.'}
+        </p>
+      )}
+      {internetDown && !serverDown && <p className="error small">Direct internet is not responding. Apps set to Direct may be offline.</p>}
+    </div>
+  )
+}
+
+function HealthRow({ label, check }: { label: string; check?: HealthCheck }) {
+  return (
+    <div className="health-row">
+      <span className={'dot ' + (!check ? 'busy' : check.ok ? 'on' : 'bad')} />
+      <span className="grow">{label}</span>
+      <span className="muted small">
+        {!check ? 'Checking…' : check.ok ? `${check.latency} ms` : check.error}
+        {check && ` · ${ago(check.checkedAt)}`}
+      </span>
+    </div>
+  )
+}
+
+function RouteBadge({ route }: { route?: AppRoute }) {
+  if (!route) return <span className="muted">-</span>
+  const label = route === 'vpn' ? 'VPN' : route === 'direct' ? 'Direct' : 'VPN + Direct'
+  return <span className={'route ' + route}>{label}</span>
 }
 
 function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {

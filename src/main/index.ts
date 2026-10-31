@@ -5,7 +5,7 @@ import { Core } from './core'
 import { extractLinks, parseLink } from './parser'
 import { Store } from './store'
 import { fetchSubscription } from './subscription'
-import { clearSystemProxy, isAdmin, listProcesses, relaunchAsAdmin } from './system'
+import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
 import type { AppRule, ImportResult, RunningProcess, ServerProfile, Settings } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
@@ -206,6 +206,7 @@ handle('pickExe', async () => {
 
 handle('connect', () => connect())
 handle('disconnect', () => core.stop())
+handle('checkHealth', () => core.checkHealth())
 handle('isAdmin', () => isAdmin())
 handle('relaunchAsAdmin', async () => {
   await core.stop()
@@ -274,8 +275,10 @@ function updateTray(): void {
 app.on('second-instance', showWindow)
 
 app.whenReady().then(async () => {
-  // If a previous run crashed while the system proxy was on, turn it off.
+  // If a previous run crashed while connected, undo what it left behind:
+  // the system proxy setting, and fake IPs in Windows' DNS cache.
   await clearSystemProxy(store.state.settings.mixedPort).catch(() => undefined)
+  await flushDns()
   createWindow()
   tray = new Tray(nativeImage.createFromPath(iconPath()).resize({ width: 16, height: 16 }))
   tray.on('click', showWindow)

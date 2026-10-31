@@ -68,6 +68,7 @@ export function App() {
 
   const props: PageProps = { state, status, stats, logs, run, go: setPage }
   const running = status.state === 'running'
+  const serverDown = running && status.health?.server?.ok === false
 
   return (
     <div className="layout">
@@ -82,8 +83,16 @@ export function App() {
           </button>
         ))}
         <div className="sidebar-footer">
-          <span className={'dot ' + (running ? 'on' : status.state === 'stopped' ? 'off' : 'busy')} />
-          {running ? 'Connected' : status.state === 'stopped' ? 'Disconnected' : status.state === 'starting' ? 'Connecting…' : 'Stopping…'}
+          <span className={'dot ' + (serverDown ? 'busy' : running ? 'on' : status.state === 'stopped' ? 'off' : 'busy')} />
+          {serverDown
+            ? 'Server not responding'
+            : running
+              ? 'Connected'
+              : status.state === 'stopped'
+                ? 'Disconnected'
+                : status.state === 'starting'
+                  ? 'Connecting…'
+                  : 'Stopping…'}
         </div>
       </nav>
       <main className="content">

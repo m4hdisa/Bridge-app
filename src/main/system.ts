@@ -71,6 +71,28 @@ if ($s.ProxyServer -eq '127.0.0.1:${port}') {
 }`)
 }
 
+/**
+ * The IPv4 DNS server of the network adapter that carries the default route
+ * (usually the router). Must be called before TUN starts. Undefined if not found.
+ */
+export async function physicalDnsServer(): Promise<string | undefined> {
+  try {
+    const { stdout } = await powershell(`
+$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne 'Bridge' }
+$best = $routes | Sort-Object { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4).InterfaceMetric } | Select-Object -First 1
+if ($best) { (Get-DnsClientServerAddress -InterfaceIndex $best.ifIndex -AddressFamily IPv4).ServerAddresses | Select-Object -First 1 }`)
+    const ip = stdout.trim().split(/\r?\n/)[0]?.trim()
+    return ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip) ? ip : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Clears Windows' DNS cache, so apps don't keep fake IPs after disconnecting. */
+export async function flushDns(): Promise<void> {
+  await exec('ipconfig', ['/flushdns'], { windowsHide: true }).catch(() => undefined)
+}
+
 /** Running processes that have a readable exe path, one entry per exe. */
 export async function listProcesses(): Promise<RunningProcess[]> {
   const { stdout } = await powershell(
