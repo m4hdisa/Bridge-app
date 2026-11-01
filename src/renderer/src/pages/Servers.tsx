@@ -309,7 +309,7 @@ function Tile({ label, children }: { label: string; children: ReactNode }) {
 
 function WarpCard({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
   const method = s.warp?.method ?? 'auto'
-  const hint = method === 'auto' ? 'Tries every way at once and keeps the first one that works.' : WARP_METHODS.find((m) => m.id === method)?.hint
+  const hint = method === 'auto' ? 'Tries every way at once. Prefers Gool, whose exit is outside Iran; otherwise keeps the first one that works.' : WARP_METHODS.find((m) => m.id === method)?.hint
   return (
     <Card className={cn(selected && 'border-primary/50')}>
       <CardHeader>

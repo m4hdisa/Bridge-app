@@ -8,7 +8,7 @@ import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, with
 import { connect } from 'node:net'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
-import { isWarp, parseWarpLine, WARP_IDENTITY_FILE, WARP_READY, WARP_REGISTER_TRIES, warpArgs, warpLabel, warpMethods, warpRegisterArgs } from './warp'
+import { isWarp, parseWarpLine, prefersForeignExit, WARP_IDENTITY_FILE, WARP_NO_IPV6, WARP_REGISTER_TRIES, warpArgs, warpExitCountry, warpLabel, warpMethods, warpReady, warpRegisterArgs } from './warp'
 import { clearSystemProxy, flushDns, freePort, networkInfo, setSystemProxy } from './system'
 import { usesTun } from '../shared/types'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats, WarpMethod } from '../shared/types'
@@ -68,6 +68,16 @@ class Cancelled extends Error {
 const MAX_LOGS = 1000
 /** How long one WARP method may take to find a gateway and prove the tunnel works. */
 const WARP_ATTEMPT_MS = 75_000
+/** Once another method works, how long Auto still waits for Gool (whose exit is outside Iran). */
+const WARP_PREFER_WAIT_MS = 30_000
+
+interface WarpWinner {
+  method: WarpMethod
+  port: number
+  child: ChildProcess
+  /** Exit country Aether reported for the tunnel, e.g. "DE". */
+  exit?: string
+}
 const HEALTH_INTERVAL_MS = 20000
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
@@ -251,14 +261,22 @@ export class Core extends EventEmitter {
   }
 
   /** Starts one WARP attempt; resolves once Aether serves a working tunnel on `port`. */
-  private launchWarp(method: WarpMethod, port: number): Promise<ChildProcess> {
+  private launchWarp(method: WarpMethod, port: number): Promise<WarpWinner> {
     return new Promise((resolve, reject) => {
       let ready = false
+      let exit: string | undefined
       const child = this.spawnAether(warpArgs(method, port, join(this.warpDir, 'aether.toml')), `warp ${method}`, (text) => {
-        if (ready || !WARP_READY.test(text)) return
+        if (ready) return
+        exit = warpExitCountry(text) ?? exit
+        if (WARP_NO_IPV6.test(text)) {
+          clearTimeout(timer)
+          child.kill()
+          return reject(new Error(`${warpLabel(method)}: this network has no IPv6`))
+        }
+        if (!warpReady(text, port)) return
         ready = true
         clearTimeout(timer)
-        resolve(child)
+        resolve({ method, port, child, exit })
       })
       const timer = setTimeout(() => {
         child.kill()
@@ -348,9 +366,9 @@ export class Core extends EventEmitter {
     const methods = warpMethods(server.warp)
     this.log(`Free WARP: looking for a way through (${methods.map(warpLabel).join(', ')})`)
     const attempts = await Promise.all(methods.map(async (method) => ({ method, port: await freePort() })))
-    let winner: { method: WarpMethod; port: number; child: ChildProcess }
+    let winner: WarpWinner
     try {
-      winner = await Promise.any(attempts.map((a) => this.launchWarp(a.method, a.port).then((child) => ({ ...a, child }))))
+      winner = await this.raceWarp(attempts)
     } catch (e) {
       this.checkCancelled(gen)
       const reasons = e instanceof AggregateError ? e.errors.map((x) => (x instanceof Error ? x.message : String(x))) : [String(e)]
@@ -366,8 +384,59 @@ export class Core extends EventEmitter {
       this.log(`WARP core stopped unexpectedly (exit code ${code})`, 'error')
       void this.stop().then(() => this.setStatus({ state: 'stopped', error: 'WARP core stopped unexpectedly, see Logs' }))
     })
-    this.log(`Free WARP connected with ${warpLabel(winner.method)} (local SOCKS ${winner.port})`)
+    this.log(`Free WARP connected with ${warpLabel(winner.method)}${winner.exit ? `, exit ${winner.exit}` : ''} (local SOCKS ${winner.port})`)
+    if (winner.exit === 'IR') {
+      this.log(
+        "Free WARP: Cloudflare registers this exit address in Iran. Filtering is still bypassed (the traffic leaves abroad), but sites that block Iranian users may refuse. Gool, which gets a foreign address, didn't get through this time.",
+        'warn'
+      )
+    }
     return { ...server, outbound: socksOutbound(winner.port) }
+  }
+
+  /**
+   * Runs the WARP attempts at the same time. Gool wins outright; when another method works first,
+   * Gool still gets WARP_PREFER_WAIT_MS to finish, and the other one is used if it doesn't.
+   */
+  private raceWarp(attempts: { method: WarpMethod; port: number }[]): Promise<WarpWinner> {
+    return new Promise((resolve, reject) => {
+      const preferred = new Set(attempts.filter((a) => prefersForeignExit(a.method)).map((a) => a.method))
+      const errors: unknown[] = []
+      let settled = 0
+      let fallback: WarpWinner | undefined
+      let wait: NodeJS.Timeout | undefined
+      let done = false
+      const finish = (w: WarpWinner) => {
+        if (done) return
+        done = true
+        clearTimeout(wait)
+        resolve(w)
+      }
+      for (const a of attempts) {
+        this.launchWarp(a.method, a.port).then(
+          (w) => {
+            settled++
+            preferred.delete(a.method)
+            if (prefersForeignExit(a.method)) return finish(w)
+            if (fallback) return
+            fallback = w
+            if (!preferred.size) return finish(w)
+            this.log(`Free WARP: ${warpLabel(a.method)} works; waiting up to ${WARP_PREFER_WAIT_MS / 1000} s for Gool, which exits outside Iran`)
+            wait = setTimeout(() => finish(w), WARP_PREFER_WAIT_MS)
+          },
+          (e) => {
+            settled++
+            preferred.delete(a.method)
+            errors.push(e)
+            if (fallback && !preferred.size) return finish(fallback)
+            if (settled === attempts.length && !fallback && !done) {
+              done = true
+              reject(new AggregateError(errors))
+            }
+          }
+        )
+      }
+    })
   }
 
   log(text: string, level: LogLine['level'] = 'info'): void {

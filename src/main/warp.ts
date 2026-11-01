@@ -38,6 +38,9 @@ export function warpLabel(method: WarpMethod): string {
 }
 
 const METHOD_ARGS: Record<WarpMethod, string[]> = {
+  // WireGuard inside a MASQUE (HTTP/2) tunnel. Its WireGuard account is made from inside WARP,
+  // so it needs no direct access to the WARP API, and Cloudflare gives it a foreign exit.
+  gool: ['--gool', '--h2', '-4'],
   h3: ['--masque', '--h3', '-4'],
   h2: ['--masque', '--h2', '-4'],
   'h2-fragment': ['--masque', '--h2', '--fragment', '-4'],
@@ -61,10 +64,16 @@ export function warpArgs(method: WarpMethod, port: number, configFile: string): 
     `127.0.0.1:${port}`,
     '--config',
     configFile,
-    // WARP sometimes hands out an Iranian exit, which defeats the point; refuse those.
-    '--exit-loc',
-    '!IR'
+    // Gool is there for its foreign exit, so it refuses an Iranian one and looks again. The
+    // others take what they get: from Iran that is almost always an address Cloudflare
+    // registers in Iran (the traffic still leaves abroad, so filtering is bypassed).
+    ...(prefersForeignExit(method) ? ['--exit-loc', '!IR'] : [])
   ]
+}
+
+/** Methods whose point is an exit outside Iran; Auto waits a little for them before taking another. */
+export function prefersForeignExit(method: WarpMethod): boolean {
+  return method === 'gool'
 }
 
 /**
@@ -94,5 +103,18 @@ export function parseWarpLine(line: string): { level: 'info' | 'warn' | 'error';
   return { level: m[1] === 'ERROR' ? 'error' : m[1] === 'WARN' ? 'warn' : 'info', text: m[2] }
 }
 
-/** Aether binds its port at startup but serves only once the tunnel is validated; this line says so. */
-export const WARP_READY = /socks5 server listening on/
+/**
+ * Aether binds its port at startup but serves only once the tunnel is validated; this line says
+ * so. Gool prints the same line first for an internal port, so the port must match.
+ */
+export function warpReady(text: string, port: number): boolean {
+  return text.includes(`socks5 server listening on 127.0.0.1:${port}`)
+}
+
+/** The exit country Aether found for its tunnel ("masque exit: 104.28.214.161, IR via FRA, ..."). */
+export function warpExitCountry(text: string): string | undefined {
+  return text.match(/\bexit: \S+, ([A-Z]{2}) via /)?.[1]
+}
+
+/** Aether's line when the IPv6 method can't work at all on this network. */
+export const WARP_NO_IPV6 = /host has no IPv6 route/

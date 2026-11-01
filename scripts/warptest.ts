@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { Core } from '../src/main/core'
 import { parseLink } from '../src/main/parser'
 import { DEFAULT_SETTINGS } from '../src/main/store'
-import { newWarpServer, parseWarpLine, WARP_IDENTITY_FILE, WARP_READY, WARP_REGISTER_TRIES, warpArgs, warpMethods } from '../src/main/warp'
+import { newWarpServer, parseWarpLine, WARP_IDENTITY_FILE, WARP_REGISTER_TRIES, warpArgs, warpExitCountry, warpMethods, warpReady } from '../src/main/warp'
 
 const root = join(__dirname, '..')
 let failed = 0
@@ -24,13 +24,17 @@ const check = (cond: boolean, msg: string) => {
 
 function offline() {
   console.log('Command lines and logs')
-  check(warpMethods({ method: 'auto' }).join(',') === 'h3,h2,h2-fragment,h2-ipv6', `auto races ${warpMethods({ method: 'auto' }).join(', ')}`)
+  check(warpMethods({ method: 'auto' }).join(',') === 'gool,h3,h2,h2-fragment,h2-ipv6', `auto races ${warpMethods({ method: 'auto' }).join(', ')}`)
   check(warpMethods({ method: 'wireguard' }).join(',') === 'wireguard', 'a chosen method runs alone')
   const args = warpArgs('h2-ipv6', 1234, 'C:\\data\\aether.toml')
   check(args.includes('--h2') && args.includes('-6') && args.join(' ').includes('--bind 127.0.0.1:1234'), `h2-ipv6 args: ${args.join(' ')}`)
-  check(args.join(' ').includes('--exit-loc !IR'), 'Iranian exits are refused')
+  check(!args.includes('--exit-loc'), 'plain methods accept any exit')
+  const gool = warpArgs('gool', 1234, 'C:\\data\\aether.toml').join(' ')
+  check(gool.includes('--gool --h2') && gool.includes('--exit-loc !IR'), `gool refuses Iranian exits: ${gool}`)
+  check(warpExitCountry('[+] masque exit: 104.28.214.161, IR via FRA, 316ms to cloudflare, warp on') === 'IR', 'exit country read from the log')
+  check(!warpReady('[+] socks5 server listening on 127.0.0.1:52859', 21819), "gool's internal port is not taken for the real one")
   const line = parseWarpLine('[2026-11-01T13:44:28.292Z INFO  aether::socks] [+] socks5 server listening on 127.0.0.1:21819')
-  check(line.level === 'info' && line.text.startsWith('[+] socks5') && WARP_READY.test(line.text), 'ready line parsed')
+  check(line.level === 'info' && line.text.startsWith('[+] socks5') && warpReady(line.text, 21819), 'ready line parsed')
   check(parseWarpLine('[2026-11-01T13:44:28.292Z WARN  aether] [-] gateway lost').level === 'warn', 'warn level parsed')
 }
 
@@ -96,6 +100,7 @@ async function live() {
   check(core.status.state === 'running', `running after ${((Date.now() - t0) / 1000).toFixed(1)} s`)
   const won = core.logs.find((l) => /Free WARP connected with/.test(l.text))?.text
   check(!!won, won || 'no "connected with" line')
+  check(/Gool/.test(won || ''), 'Auto picked Gool (foreign exit)')
   check(existsSync(join(dataDir, 'warp', WARP_IDENTITY_FILE)), 'WARP account saved')
   check(aetherProcesses() === before + 1, 'only the winning aether.exe is left running')
   const trace = await curlTrace(port)

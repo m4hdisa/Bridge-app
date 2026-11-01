@@ -35,14 +35,18 @@ export interface ServerProfile {
 export type Engine = 'sing-box' | 'xray' | 'aether'
 
 /** How the free WARP server reaches Cloudflare. Which ones get through depends on the network. */
-export type WarpMethod = 'h3' | 'h2' | 'h2-fragment' | 'h2-ipv6' | 'wireguard'
+export type WarpMethod = 'gool' | 'h3' | 'h2' | 'h2-fragment' | 'h2-ipv6' | 'wireguard'
 
 export interface WarpOptions {
-  /** "auto" tries the MASQUE methods at the same time and keeps the first one that works. */
+  /**
+   * "auto" tries the methods at the same time. Gool is preferred, because the others usually get
+   * an exit that Cloudflare registers in Iran; one of them is used if Gool doesn't get through.
+   */
   method: WarpMethod | 'auto'
 }
 
 export const WARP_METHODS: { id: WarpMethod; label: string; hint: string; auto: boolean }[] = [
+  { id: 'gool', label: 'Gool (WARP in WARP)', hint: 'Exits outside Iran: a second WARP hop is opened from inside the first, so Cloudflare gives a foreign address. A bit slower. Auto prefers it.', auto: true },
   { id: 'h3', label: 'MASQUE over HTTP/3', hint: 'Fastest. Needs UDP, which some networks block (often Irancell).', auto: true },
   { id: 'h2', label: 'MASQUE over HTTP/2', hint: 'Runs over TCP, for networks that block QUIC / UDP.', auto: true },
   { id: 'h2-fragment', label: 'HTTP/2 + fragment', hint: 'Splits the TLS handshake, for networks that reset it (some home internet).', auto: true },
