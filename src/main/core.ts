@@ -4,11 +4,11 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildConfig, buildTestConfig, processPathRegex, withServerIp, writeAppRuleSets, type ClashApi } from './config'
+import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, withServerIp, writeAppRuleSets, type ClashApi } from './config'
 import { connect } from 'node:net'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
-import { isWarp, parseWarpLine, WARP_IDENTITY_FILE, WARP_READY, warpArgs, warpLabel, warpMethods, warpRegisterArgs } from './warp'
+import { isWarp, parseWarpLine, WARP_IDENTITY_FILE, WARP_READY, WARP_REGISTER_TRIES, warpArgs, warpLabel, warpMethods, warpRegisterArgs } from './warp'
 import { clearSystemProxy, flushDns, freePort, networkInfo, setSystemProxy } from './system'
 import { usesTun } from '../shared/types'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats, WarpMethod } from '../shared/types'
@@ -128,6 +128,11 @@ export class Core extends EventEmitter {
   private xrayChild?: ChildProcess
   /** aether.exe processes: several while WARP methods race, one once connected. */
   private warpChildren = new Set<ChildProcess>()
+  /**
+   * One of the user's own servers, for creating the WARP account through it when Cloudflare's
+   * WARP service is blocked directly. Set by the app shell.
+   */
+  warpHelper?: () => ServerProfile | undefined
   private api?: ClashApi
   private proxyPort?: number
   /** SOCKS port that always exits through the VPN (see BuildOptions.probePort); set while running. */
@@ -266,6 +271,69 @@ export class Core extends EventEmitter {
     })
   }
 
+  /** Runs one aether.exe to the end (or until `timeoutMs`), for creating the WARP account. */
+  private runAether(args: string[], timeoutMs: number): Promise<void> {
+    const child = this.spawnAether(args, 'warp')
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => child.kill(), timeoutMs)
+      child.once('exit', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
+  }
+
+  /**
+   * Starts a plain local SOCKS proxy into one of the user's own servers (see warpHelper) and
+   * returns its port and process, or undefined when there is no server to use or it doesn't start.
+   */
+  private async startWarpHelper(): Promise<{ port: number; child: ChildProcess } | undefined> {
+    const server = this.warpHelper?.()
+    if (!server) return undefined
+    try {
+      const port = await freePort()
+      let child: ChildProcess
+      if (server.engine === 'xray' && server.xray) {
+        child = await this.launchXray([{ port, outbound: await this.pinXray(server.xray as XrayOutbound, true) }], 'warp-helper')
+      } else {
+        const api: ClashApi = { port: await freePort(), secret: randomUUID() }
+        const file = join(this.paths.dataDir, 'warp-helper.json')
+        writeFileSync(file, JSON.stringify(buildHelperConfig(await this.pinAddress(server, true), port, api), null, 2))
+        child = await launch(this.paths.singBox, file, this.paths.dataDir, api, (line, isErr) => isErr && /ERROR|FATAL/.test(line) && this.coreLine(line, true))
+      }
+      // Tracked with the aether processes, so a cancelled connect stops it too.
+      this.warpChildren.add(child)
+      child.once('exit', () => this.warpChildren.delete(child))
+      this.log(`Free WARP: using "${server.name}" to reach Cloudflare's WARP service`)
+      return { port, child }
+    } catch (e) {
+      this.log(`Free WARP: could not start "${server.name}" to create the account (${e instanceof Error ? e.message : e})`, 'warn')
+      return undefined
+    }
+  }
+
+  /** Creates the WARP account, trying each way in WARP_REGISTER_TRIES until one works. */
+  private async registerWarp(gen: number): Promise<void> {
+    const config = join(this.warpDir, 'aether.toml')
+    const done = () => existsSync(join(this.warpDir, WARP_IDENTITY_FILE))
+    this.log('Free WARP: creating a WARP account (first use only, can take a few minutes)')
+    for (const t of WARP_REGISTER_TRIES) {
+      const helper = t.via ? await this.startWarpHelper() : undefined
+      this.checkCancelled(gen)
+      if (t.via && !helper) continue
+      this.log(`Free WARP: creating the account ${t.label}`)
+      await this.runAether(warpRegisterArgs(config, t.args, helper?.port), t.timeoutMs)
+      if (helper) {
+        this.warpChildren.delete(helper.child)
+        await killProcess(helper.child)
+      }
+      this.checkCancelled(gen)
+      if (done()) return this.log('Free WARP: account created')
+    }
+    const via = this.warpHelper?.() ? '' : ' Adding one of your own servers lets Bridge create it through that server.'
+    throw new Error(`Free WARP: could not create a WARP account, because Cloudflare's WARP service is blocked on this network right now (see Logs).${via}`)
+  }
+
   /**
    * For the free WARP server, starts aether.exe and returns the server as sing-box should see
    * it: a SOCKS hop into Aether. With method "auto", the MASQUE methods all run at once (each on
@@ -276,21 +344,7 @@ export class Core extends EventEmitter {
     if (!exe || !existsSync(exe)) throw new Error('WARP core (aether.exe) not found; reinstall Bridge')
     mkdirSync(this.warpDir, { recursive: true })
     // One WARP account for every attempt, made once and kept: Cloudflare limits new sign-ups.
-    if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) {
-      this.log('Free WARP: creating a WARP account (first use only)')
-      const child = this.spawnAether(warpRegisterArgs(join(this.warpDir, 'aether.toml')), 'warp')
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => child.kill(), 60_000)
-        child.once('exit', () => {
-          clearTimeout(timer)
-          resolve()
-        })
-      })
-      this.checkCancelled(gen)
-      if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) {
-        throw new Error("Free WARP: could not create a WARP account. Cloudflare's WARP service may be blocked on this network right now (see Logs).")
-      }
-    }
+    if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) await this.registerWarp(gen)
     const methods = warpMethods(server.warp)
     this.log(`Free WARP: looking for a way through (${methods.map(warpLabel).join(', ')})`)
     const attempts = await Promise.all(methods.map(async (method) => ({ method, port: await freePort() })))

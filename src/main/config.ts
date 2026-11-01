@@ -223,6 +223,18 @@ export function buildConfig(o: BuildOptions): Json {
   }
 }
 
+/** A plain local SOCKS proxy into one server, nothing else: used to create the WARP account through it. */
+export function buildHelperConfig(server: ServerProfile, port: number, clashApi: ClashApi): Json {
+  return {
+    log: { level: 'warn', timestamp: true },
+    dns: { servers: [{ type: 'local', tag: 'dns-local' }] },
+    inbounds: [{ type: 'socks', tag: 'helper-in', listen: '127.0.0.1', listen_port: port }],
+    outbounds: [{ ...normalizeOutbound(server.outbound), tag: 'proxy' }],
+    route: { final: 'proxy', default_domain_resolver: 'dns-local', auto_detect_interface: true },
+    experimental: { clash_api: { external_controller: `127.0.0.1:${clashApi.port}`, secret: clashApi.secret } }
+  }
+}
+
 /**
  * A config with every server as its own outbound and no inbounds, used only to
  * run real latency tests through the Clash API.

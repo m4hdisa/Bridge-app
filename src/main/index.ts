@@ -247,6 +247,10 @@ function watchHealth(s: CoreStatus): void {
     })
 }
 
+// When Cloudflare's WARP service is blocked, Free WARP creates its account through one of the
+// user's own servers: the one with the best ping, or else the first one.
+core.warpHelper = () => bestServer() ?? store.state.servers.find((s) => !isWarp(s))
+
 // ---------- updates ----------
 
 const UPDATE_CHECK_EVERY_MS = 6 * 3600_000

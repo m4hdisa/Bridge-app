@@ -67,10 +67,24 @@ export function warpArgs(method: WarpMethod, port: number, configFile: string): 
   ]
 }
 
+/**
+ * Ways to create the WARP account, in the order Bridge tries them. Iran's firewall resets the
+ * TLS handshake to Cloudflare's WARP API (api.cloudflareclient.com / api.devices.cloudflare.com),
+ * and Aether 2.4 falls back to other Cloudflare edges on its own, which takes a while. The
+ * account is needed only once, so when the API can't be reached directly it is created through
+ * one of the user's own servers ("via"), as PattN does with its exit-node. ECH is not tried:
+ * its key domain (cloudflare-ech.com) is blocked in Iran.
+ */
+export const WARP_REGISTER_TRIES: { label: string; args: string[]; via?: boolean; timeoutMs: number }[] = [
+  // The fragment splits the ClientHello whose server name the firewall looks for.
+  { label: 'directly, with TLS fragment', args: ['--fragment'], timeoutMs: 150_000 },
+  { label: 'through your own server', args: [], via: true, timeoutMs: 90_000 },
+  { label: 'directly', args: [], timeoutMs: 120_000 }
+]
+
 /** Registers the WARP account once, before parallel attempts would each try to make their own. */
-export function warpRegisterArgs(configFile: string): string[] {
-  // The fragment also applies to the WARP API, whose handshake Iran's firewall resets.
-  return ['--register', 'masque', '--fragment', '--config', configFile]
+export function warpRegisterArgs(configFile: string, extra: string[] = [], upstreamPort?: number): string[] {
+  return ['--register', 'masque', ...extra, ...(upstreamPort ? ['--upstream', `socks5://127.0.0.1:${upstreamPort}`] : []), '--config', configFile]
 }
 
 /** Aether prints "[time LEVEL target] message"; returns the level and the message alone. */

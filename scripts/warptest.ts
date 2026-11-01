@@ -1,17 +1,19 @@
 // Free WARP test. Offline part: the Aether command lines and log parsing. Live part (safe on a
 // VPS): starts Bridge's core in proxy-only mode (no TUN, no system proxy) with the WARP
 // server, sends real HTTPS and UDP traffic through the local proxy, checks cancelling a
-// start and reconnecting with the saved WARP account, then stops. Needs internet access.
+// start, reconnecting with the saved WARP account and creating the account through one of
+// the user's own servers, then stops. Needs internet access.
 // Usage: tsx scripts/warptest.ts [--offline]
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { createSocket } from 'node:dgram'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Core } from '../src/main/core'
+import { parseLink } from '../src/main/parser'
 import { DEFAULT_SETTINGS } from '../src/main/store'
-import { newWarpServer, parseWarpLine, WARP_IDENTITY_FILE, WARP_READY, warpArgs, warpMethods } from '../src/main/warp'
+import { newWarpServer, parseWarpLine, WARP_IDENTITY_FILE, WARP_READY, WARP_REGISTER_TRIES, warpArgs, warpMethods } from '../src/main/warp'
 
 const root = join(__dirname, '..')
 let failed = 0
@@ -126,9 +128,71 @@ async function live() {
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }
 
+/**
+ * The WARP account made through one of the user's own servers (for networks that block
+ * Cloudflare's WARP service). A local shadowsocks server stands in for the user's server, and
+ * only the "through your own server" way is tried.
+ */
+async function viaOwnServer() {
+  console.log('Account through your own server')
+  const dataDir = mkdtempSync(join(tmpdir(), 'bridge-warptest-via-'))
+  const ssPort = 20000 + Math.floor(Math.random() * 20000)
+  const ssConfig = join(dataDir, 'ss-server.json')
+  writeFileSync(
+    ssConfig,
+    JSON.stringify({
+      log: { level: 'info' },
+      inbounds: [{ type: 'shadowsocks', listen: '127.0.0.1', listen_port: ssPort, method: 'aes-128-gcm', password: 'bridge-test' }],
+      outbounds: [{ type: 'direct' }]
+    })
+  )
+  let ssLog = ''
+  const ss = spawn(join(root, 'resources', 'core', 'sing-box.exe'), ['run', '-c', ssConfig], { windowsHide: true })
+  ss.stdout.on('data', (d) => (ssLog += d))
+  ss.stderr.on('data', (d) => (ssLog += d))
+  await new Promise((r) => setTimeout(r, 1000))
+
+  const tries = WARP_REGISTER_TRIES.splice(0)
+  WARP_REGISTER_TRIES.push(...tries.filter((t) => t.via))
+  const core = new Core({
+    singBox: join(root, 'resources', 'core', 'sing-box.exe'),
+    aether: join(root, 'resources', 'aether', 'aether.exe'),
+    rulesDir: join(root, 'resources', 'rules'),
+    dataDir,
+    manageSystemProxy: false
+  })
+  const own = parseLink(`ss://${Buffer.from('aes-128-gcm:bridge-test').toString('base64')}@127.0.0.1:${ssPort}#My server`)
+  const port = 20000 + Math.floor(Math.random() * 20000)
+  const settings = { ...DEFAULT_SETTINGS, mode: 'proxy-only' as const, mixedPort: port }
+
+  // No own server: a clear error.
+  const noServer = await core.start(newWarpServer(), settings, []).then(
+    () => '',
+    (e) => String(e)
+  )
+  check(/could not create a WARP account/.test(noServer) && /your own servers/.test(noServer), 'without an own server: clear error')
+
+  core.warpHelper = () => own
+  await core.start(newWarpServer(), settings, [])
+  check(core.logs.some((l) => /using "My server" to reach/.test(l.text)), 'the account went through the own server')
+  check(/cloudflare/i.test(ssLog), 'the own server carried the WARP API call')
+  check(existsSync(join(dataDir, 'warp', WARP_IDENTITY_FILE)) && core.status.state === 'running', 'account created and WARP connected')
+  check(/warp=(on|plus)/.test(await curlTrace(port)), 'HTTPS through WARP')
+  await core.stop()
+  WARP_REGISTER_TRIES.splice(0, WARP_REGISTER_TRIES.length, ...tries)
+  await new Promise<void>((r) => {
+    ss.once('exit', () => r())
+    ss.kill()
+  })
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+}
+
 async function main() {
   offline()
-  if (!process.argv.includes('--offline')) await live()
+  if (!process.argv.includes('--offline')) {
+    await live()
+    await viaOwnServer()
+  }
   console.log(failed ? `\n${failed} FAILED` : '\nAll passed')
   process.exit(failed ? 1 : 0)
 }
