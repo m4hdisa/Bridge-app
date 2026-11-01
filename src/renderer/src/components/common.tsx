@@ -2,7 +2,7 @@
 import * as React from 'react'
 import { AppWindow, Globe } from 'lucide-react'
 import * as Flags from 'country-flag-icons/react/3x2'
-import { BRIDGE_PATHS, BRIDGE_STROKE, LOGO_BOTTOM, LOGO_TILE, LOGO_TOP } from '../../../shared/logo'
+import { BRIDGE_HOLE_R, BRIDGE_HOLES, BRIDGE_RECTS, LOGO_COLOR, LOGO_TILE } from '../../../shared/logo'
 import type { AppRoute } from '../../../shared/types'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -76,28 +76,24 @@ export function Flag({ code, className }: { code?: string; className?: string })
   return <Svg title={code} className={cn('h-3.5 w-5 shrink-0 rounded-[3px] shadow-[0_0_0_1px] shadow-white/10', className)} />
 }
 
-/** Bridge's logo: a rounded blue tile with a plain white bridge (the app icon is drawn from the same geometry). */
+/** Bridge's logo: the white bridge mark on the brand-blue tile (the app icon is drawn from the same geometry). */
 export function BridgeLogo({ className }: { className?: string }) {
   const id = React.useId()
   return (
     <svg viewBox="0 0 100 100" className={cn('shrink-0', className)} role="img" aria-label="Bridge">
       <defs>
-        <linearGradient id={`${id}-fill`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={LOGO_TOP} />
-          <stop offset="100%" stopColor={LOGO_BOTTOM} />
-        </linearGradient>
-        <linearGradient id={`${id}-shine`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="white" stopOpacity="0.3" />
-          <stop offset="50%" stopColor="white" stopOpacity="0" />
-        </linearGradient>
+        {/* The bridge is its rectangles minus the circles, so the tile shows through the cut-outs. */}
+        <mask id={`${id}-cut`}>
+          {BRIDGE_RECTS.map(([x1, y1, x2, y2]) => (
+            <rect key={`${x1},${y1}`} x={x1} y={y1} width={x2 - x1} height={y2 - y1} fill="white" />
+          ))}
+          {BRIDGE_HOLES.map(([cx, cy]) => (
+            <circle key={`${cx},${cy}`} cx={cx} cy={cy} r={BRIDGE_HOLE_R} fill="black" />
+          ))}
+        </mask>
       </defs>
-      <path d={LOGO_TILE} fill={`url(#${id}-fill)`} />
-      <path d={LOGO_TILE} fill={`url(#${id}-shine)`} />
-      <g fill="none" stroke="white" strokeWidth={BRIDGE_STROKE} strokeLinecap="round" strokeLinejoin="round">
-        {BRIDGE_PATHS.map((d) => (
-          <path key={d} d={d} />
-        ))}
-      </g>
+      <path d={LOGO_TILE} fill={LOGO_COLOR} />
+      <rect width="100" height="100" fill="white" mask={`url(#${id}-cut)`} />
     </svg>
   )
 }

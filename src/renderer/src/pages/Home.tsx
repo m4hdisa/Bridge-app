@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Activity, AppWindow, ArrowDown, ArrowUp, Copy, Globe, MonitorCog, Plug, Plus, Power, RefreshCw, ShieldAlert, ShieldCheck, Split, TriangleAlert, Wifi, Zap } from 'lucide-react'
+import { Activity, AppWindow, ArrowDown, ArrowUp, Copy, Globe, MonitorCog, Plug, Plus, Power, RefreshCw, ShieldAlert, ShieldCheck, Split, TriangleAlert, Wifi, X, Zap } from 'lucide-react'
 import { AUTO_SERVER, HEALTH_INTERVAL_MS, usesTun, type AppRule, type ConnectionMode, type CoreStatus, type HealthCheck, type ServerProfile } from '../../../shared/types'
 import { api, connectionSummary, type PageProps } from '../App'
 import { ago, bytes, duration, speed } from '../format'
@@ -214,15 +214,7 @@ export function Home({ state, status, stats, run, go }: PageProps) {
           </div>
         </section>
 
-        {running && status.otherTunnels?.length ? (
-          <Alert variant="warning">
-            <TriangleAlert />
-            <AlertTitle>Another VPN or game tool is active</AlertTitle>
-            <AlertDescription>
-              {status.otherTunnels.join(', ')}. Bridge keeps its own traffic on your real adapter. Set apps that tool should carry (e.g. Discord for EZConnect) to “Other VPN” on the Apps page.
-            </AlertDescription>
-          </Alert>
-        ) : null}
+        {running && status.otherTunnels?.length ? <OtherTunnelsAlert tunnels={status.otherTunnels} /> : null}
 
         <HealthCard status={status} run={run} />
 
@@ -355,6 +347,45 @@ function PowerButton({ status, disabled, onClick }: { status: CoreStatus; disabl
         </span>
       </button>
     </div>
+  )
+}
+
+const DISMISSED_TUNNELS_KEY = 'bridge.dismissedTunnels'
+
+/** The "another VPN is active" note. Closing it hides it until a different set of tools is active. */
+function OtherTunnelsAlert({ tunnels }: { tunnels: string[] }) {
+  const key = tunnels.join(', ')
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(DISMISSED_TUNNELS_KEY) === key
+    } catch {
+      return false
+    }
+  })
+  if (dismissed) return null
+  const close = () => {
+    setDismissed(true)
+    try {
+      localStorage.setItem(DISMISSED_TUNNELS_KEY, key)
+    } catch {
+      // Hidden for now; it comes back next time.
+    }
+  }
+  return (
+    <Alert variant="warning" className="pr-10">
+      <TriangleAlert />
+      <AlertTitle>Another VPN or game tool is active</AlertTitle>
+      <AlertDescription>
+        {key}. Bridge keeps its own traffic on your real adapter. Set apps that tool should carry (e.g. Discord for EZConnect) to “Other VPN” on the Apps page.
+      </AlertDescription>
+      <button
+        onClick={close}
+        aria-label="Close"
+        className="text-muted-foreground hover:text-foreground hover:bg-accent absolute top-2.5 right-2.5 flex size-6 cursor-pointer items-center justify-center rounded-md transition-colors"
+      >
+        <X className="size-4" />
+      </button>
+    </Alert>
   )
 }
 

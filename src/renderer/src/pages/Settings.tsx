@@ -37,6 +37,21 @@ export function SettingsPage({ state, update, run }: PageProps) {
 
         <Card>
           <CardHeader>
+            <CardTitle>Discord</CardTitle>
+            <CardDescription>Bridge talks to the Discord app on this PC only; nothing is sent anywhere else.</CardDescription>
+          </CardHeader>
+          <CardContent className="divide-y">
+            <Row
+              title="Show in Discord"
+              description="While connected, your Discord profile shows “Bridge · Protected”, how long you've been connected and where traffic exits (never your server's name or address). Friends will see that you use a VPN."
+            >
+              <Switch checked={draft.discordActivity} onCheckedChange={(v) => set('discordActivity', v)} />
+            </Row>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>Servers</CardTitle>
             <CardDescription>Keeping ping results fresh. Pick “Auto” in the server list on the Dashboard to always use the best one.</CardDescription>
           </CardHeader>

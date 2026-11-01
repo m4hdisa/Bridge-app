@@ -2,8 +2,8 @@
 @import 'tw-animate-css';
 
 /*
- * Bridge theme: true neutral dark grays (no tint, shadcn "neutral") with a blue accent, matching
- * the app icon. Every color is a token here; change the look by editing this block only.
+ * Bridge theme: true neutral dark grays (no tint, shadcn "neutral") with the logo's blue as the
+ * accent. Every color is a token here; change the look by editing this block only.
  * Token names follow shadcn/ui so its components pick them up.
  */
 :root {
@@ -16,9 +16,9 @@
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
 
-  --primary: oklch(0.623 0.188 259.8);
+  --primary: oklch(0.473 0.256 263.7); /* #023EE8, the logo blue (LOGO_COLOR) */
   /* The darker end of the primary gradient (the connected shield). */
-  --primary-deep: oklch(0.52 0.2 264);
+  --primary-deep: oklch(0.39 0.22 264);
   --primary-foreground: oklch(0.985 0.004 255);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
@@ -30,7 +30,7 @@
 
   --border: oklch(1 0 0 / 9%);
   --input: oklch(1 0 0 / 13%);
-  --ring: oklch(0.623 0.188 259.8);
+  --ring: oklch(0.473 0.256 263.7);
 
   /* Status colors (not part of stock shadcn). Info is cyan so it stays apart from the blue accent. */
   --success: oklch(0.74 0.15 152);

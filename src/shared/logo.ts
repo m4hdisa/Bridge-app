@@ -4,26 +4,25 @@
 /** The connect button's shield, in a 100 x 120 box centred on (50, 60): flat-topped, pointed at the bottom. */
 export const SHIELD_PATH = 'M50 4 L88.5 17.6 Q93 19.2 93 24 V55 Q93 86 52.6 115.2 Q50 117 47.4 115.2 Q7 86 7 55 V24 Q7 19.2 11.5 17.6 Z'
 
-/** The logo: a rounded blue tile in a 100 x 100 box. */
+/** The brand blue: the logo's tile, and the app's primary color. */
+export const LOGO_COLOR = '#023ee8'
+
+/** The logo: a rounded tile in a 100 x 100 box. */
 export const LOGO_TILE = 'M22 0 H78 Q100 0 100 22 V78 Q100 100 78 100 H22 Q0 100 0 78 V22 Q0 0 22 0 Z'
 
 /**
- * A plain arch bridge on the tile, as round-capped white strokes: an arch over the deck, with
- * three hangers between them. Only M / L / Q / V / H commands, so make-icon can draw them too.
+ * The white bridge on the tile (the designed mark, traced from its 1024 px artwork): a deck with
+ * two pillars standing through it, and six circles cut out of it, which round off the shape
+ * into an arch between the pillars below and scallops above and at the sides.
+ * Rectangles are [x1, y1, x2, y2].
  */
-const ARCH = { x1: 22, x2: 78, y: 63, peak: 14 }
-/** The arch's height at `x` (a quadratic curve from one end of the deck to the other). */
-function archY(x: number): number {
-  const t = (x - ARCH.x1) / (ARCH.x2 - ARCH.x1)
-  return (1 - t) ** 2 * ARCH.y + 2 * (1 - t) * t * ARCH.peak + t * t * ARCH.y
-}
-export const BRIDGE_PATHS = [
-  'M14 63 H86',
-  `M${ARCH.x1} ${ARCH.y} Q50 ${ARCH.peak} ${ARCH.x2} ${ARCH.y}`,
-  ...[36, 50, 64].map((x) => `M${x} ${archY(x).toFixed(1)} V${ARCH.y}`)
+export const BRIDGE_RECTS: [number, number, number, number][] = [
+  [24, 29.5, 76, 55.9],
+  [34.7, 55.9, 39.2, 70.3],
+  [60.8, 55.9, 65.3, 70.3]
 ]
-export const BRIDGE_STROKE = 6.5
-
-/** The tile's fill, top to bottom (sRGB, for the PNG; the SVG uses the same colors). */
-export const LOGO_TOP = '#5b9bff'
-export const LOGO_BOTTOM = '#2453d6'
+export const BRIDGE_HOLE_R = 10.7
+export const BRIDGE_HOLES: [number, number][] = [24, 50, 76].flatMap((x): [number, number][] => [
+  [x, 29.5],
+  [x, 55.9]
+])

@@ -158,6 +158,8 @@ export interface Settings {
    * server if the current one stops responding. Chosen with selectServer(AUTO_SERVER).
    */
   autoServer: boolean
+  /** Show the connection status as the user's Discord activity (while the Discord app runs). Off by default. */
+  discordActivity: boolean
 }
 
 /** Server id the UI passes to selectServer() to turn on Auto (best ping). */

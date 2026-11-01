@@ -1,10 +1,10 @@
 // Draws the app icon (resources/icon.png, 256 x 256) from the logo geometry in src/shared/logo.ts:
-// a rounded blue tile with a plain white bridge, on a transparent background. Shapes are
+// the white bridge mark on the brand-blue tile, on a transparent background. Shapes are
 // sampled 4 x 4 per pixel for smooth edges. Usage: npx tsx scripts/make-icon.ts
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import { BRIDGE_PATHS, BRIDGE_STROKE, LOGO_BOTTOM, LOGO_TILE, LOGO_TOP } from '../src/shared/logo'
+import { BRIDGE_HOLE_R, BRIDGE_HOLES, BRIDGE_RECTS, LOGO_COLOR, LOGO_TILE } from '../src/shared/logo'
 
 const SIZE = 256
 const SAMPLES = 4
@@ -52,21 +52,14 @@ function inTile(px: number, py: number): boolean {
   return inside
 }
 
-/** The bridge: each stroke as a polyline, hit when within half the stroke width (round caps for free). */
-const strokes = BRIDGE_PATHS.map((d) => ({ pts: polygon(d), h: BRIDGE_STROKE / 2 }))
-function nearSegment(px: number, py: number, [ax, ay]: [number, number], [bx, by]: [number, number]): number {
-  const dx = bx - ax
-  const dy = by - ay
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)))
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy)
-}
+/** The bridge: inside one of its rectangles and outside every cut-out circle. */
 function inBridge(px: number, py: number): boolean {
-  return strokes.some(({ pts, h }) => pts.some((p, k) => k > 0 && nearSegment(px, py, pts[k - 1], p) <= h))
+  const inRect = BRIDGE_RECTS.some(([x1, y1, x2, y2]) => px >= x1 && px <= x2 && py >= y1 && py <= y2)
+  return inRect && !BRIDGE_HOLES.some(([cx, cy]) => Math.hypot(px - cx, py - cy) < BRIDGE_HOLE_R)
 }
 
 const rgb = (hex: string) => [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16))
-const top = rgb(LOGO_TOP)
-const bottom = rgb(LOGO_BOTTOM)
+const tileColor = rgb(LOGO_COLOR)
 
 const px = Buffer.alloc(SIZE * SIZE * 4)
 for (let y = 0; y < SIZE; y++) {
@@ -84,17 +77,9 @@ for (let y = 0; y < SIZE; y++) {
     }
     const n = SAMPLES * SAMPLES
     if (!cover) continue
-    const ly = (y + 0.5 - offY) / scale
-    const t = Math.min(1, Math.max(0, ly / 100))
-    // The gradient, with the same soft highlight as the SVG on the upper half.
-    const shine = Math.max(0, 0.3 * (1 - t / 0.5))
     const w = white / cover
     const i = (y * SIZE + x) * 4
-    for (let c = 0; c < 3; c++) {
-      const base = top[c] + (bottom[c] - top[c]) * t
-      const lit = base + (255 - base) * shine
-      px[i + c] = Math.round(lit + (255 - lit) * w)
-    }
+    for (let c = 0; c < 3; c++) px[i + c] = Math.round(tileColor[c] + (255 - tileColor[c]) * w)
     px[i + 3] = Math.round((cover / n) * 255)
   }
 }

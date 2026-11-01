@@ -33,7 +33,7 @@ export function createMockBridge(): BridgeApi {
       { id: 'r2', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
       { id: 'r3', name: 'steam.exe', path: 'C:\\Program Files (x86)\\Steam\\steam.exe', action: 'direct', enabled: false }
     ],
-    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info', autoPing: true, autoServer: false }
+    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info', autoPing: true, autoServer: false, discordActivity: false }
   }
   let status: CoreStatus = { state: 'stopped' }
   const logs: LogLine[] = [{ time: Date.now(), level: 'info', text: 'Mock backend: running in the browser, nothing is real.' }]

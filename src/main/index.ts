@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shel
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Core } from './core'
+import { DiscordPresence, type DiscordActivity } from './discord'
 import { lookupExit } from './geo'
 import { describeLink, extractLinks, parseLink } from './parser'
 import { Store } from './store'
@@ -59,9 +60,28 @@ async function ping(targets: ServerProfile[]): Promise<void> {
 
 // Look up the VPN's exit location once per connection (keyed by its start time).
 let exitLookedUpFor: number | undefined
+const discord = new DiscordPresence((text, level) => core.log(text, level))
+
+/** What Discord shows while connected: the status and where traffic exits, never the server's name or address. */
+function discordActivity(): DiscordActivity | null {
+  const s = core.status
+  if (s.state !== 'running' && s.state !== 'starting') return null
+  const server = store.state.servers.find((x) => x.id === s.serverId)
+  const where = server && isWarp(server) ? 'Free WARP (Cloudflare)' : s.exit ? `Exit: ${s.exit.country}` : undefined
+  const mode = { 'per-app': 'Per-App', tun: 'Full VPN', 'system-proxy': 'System Proxy', 'proxy-only': 'Proxy only' }[s.mode ?? 'per-app'] ?? 'VPN'
+  return {
+    details: s.state === 'starting' ? 'Connecting…' : 'Protected',
+    state: where ? `${mode} · ${where}` : mode,
+    timestamps: s.state === 'running' && s.startedAt ? { start: s.startedAt } : undefined,
+    assets: { large_image: 'bridge', large_text: `Bridge ${app.getVersion()}` },
+    buttons: [{ label: 'Get Bridge', url: 'https://github.com/m4hdisa/Bridge-app/releases/latest' }]
+  }
+}
+
 core.on('status', (s) => {
   send('status', s)
   updateTray()
+  discord.update(discordActivity())
   watchHealth(s)
   if (s.state === 'running' && s.startedAt && s.startedAt !== exitLookedUpFor && core.probePort) {
     exitLookedUpFor = s.startedAt
@@ -460,12 +480,13 @@ handle('removeSubscription', (id: string) => {
 })
 
 handle('updateSettings', async (patch: Partial<Settings>) => {
-  // Auto ping and Auto server don't change the running connection.
-  const connectionPart = ({ autoPing: _p, autoServer: _a, ...rest }: Settings) => JSON.stringify(rest)
+  // Auto ping, Auto server and the Discord activity don't change the running connection.
+  const connectionPart = ({ autoPing: _p, autoServer: _a, discordActivity: _d, ...rest }: Settings) => JSON.stringify(rest)
   const before = connectionPart(store.state.settings)
   const pingWasOn = store.state.settings.autoPing
   store.update((s) => Object.assign(s.settings, patch))
   pushState()
+  discord.setEnabled(store.state.settings.discordActivity)
   if (!pingWasOn) autoPing('turned on')
   if (connectionPart(store.state.settings) !== before) await reconnectIfRunning()
 })
@@ -581,6 +602,7 @@ app.whenReady().then(async () => {
   tray = new Tray(nativeImage.createFromPath(iconPath()).resize({ width: 16, height: 16 }))
   tray.on('click', showWindow)
   updateTray()
+  discord.setEnabled(store.state.settings.discordActivity)
   // Keep subscriptions (configs, usage, expiry) and every server's ping current without the
   // user pressing Update or Test.
   setTimeout(() => void refreshDueSubscriptions().then(() => autoPing('startup')), 10_000)
@@ -592,6 +614,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', (e) => {
   quitting = true
+  discord.dispose()
   if (core.status.state !== 'stopped') {
     e.preventDefault()
     void core.stop().finally(() => app.quit())

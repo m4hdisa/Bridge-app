@@ -39,6 +39,7 @@ const settings: Settings = {
   mode: 'tun',
   autoPing: false,
   autoServer: false,
+  discordActivity: false,
   bypassIran: true,
   mixedPort: 2080,
   testUrl: 'https://www.gstatic.com/generate_204',

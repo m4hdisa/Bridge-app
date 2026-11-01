@@ -13,7 +13,8 @@ export const DEFAULT_SETTINGS: Settings = {
   dnsMode: 'real',
   logLevel: 'info',
   autoPing: true,
-  autoServer: false
+  autoServer: false,
+  discordActivity: false
 }
 
 export class Store {
