@@ -62,18 +62,30 @@ async function ping(targets: ServerProfile[]): Promise<void> {
 let exitLookedUpFor: number | undefined
 const discord = new DiscordPresence((text, level) => core.log(text, level))
 
-/** What Discord shows while connected: the status and where traffic exits, never the server's name or address. */
+/** The app icon, from the public repo, so the activity shows it without uploading it to Discord. */
+const DISCORD_ICON = 'https://raw.githubusercontent.com/m4hdisa/Bridge-app/main/resources/icon.png'
+
+/**
+ * What Discord shows while connecting or connected: the server Bridge is on, the mode, where
+ * traffic exits (with that country's flag, small, over the Bridge icon) and for how long.
+ * The exit's IP address is never shown.
+ */
 function discordActivity(): DiscordActivity | null {
   const s = core.status
   if (s.state !== 'running' && s.state !== 'starting') return null
   const server = store.state.servers.find((x) => x.id === s.serverId)
-  const where = server && isWarp(server) ? 'Free WARP (Cloudflare)' : s.exit ? `Exit: ${s.exit.country}` : undefined
+  const name = server ? (isWarp(server) ? 'Free WARP (Cloudflare)' : server.name) : 'a VPN server'
   const mode = { 'per-app': 'Per-App', tun: 'Full VPN', 'system-proxy': 'System Proxy', 'proxy-only': 'Proxy only' }[s.mode ?? 'per-app'] ?? 'VPN'
+  const exit = s.exit
   return {
-    details: s.state === 'starting' ? 'Connecting…' : 'Protected',
-    state: where ? `${mode} · ${where}` : mode,
+    details: s.state === 'starting' ? `Connecting to ${name}` : `Connected to ${name}`,
+    state: s.state === 'starting' ? mode : exit ? `${mode} · Exit in ${exit.country}` : mode,
     timestamps: s.state === 'running' && s.startedAt ? { start: s.startedAt } : undefined,
-    assets: { large_image: 'bridge', large_text: `Bridge ${app.getVersion()}` },
+    assets: {
+      large_image: DISCORD_ICON,
+      large_text: `Bridge ${app.getVersion()}`,
+      ...(exit ? { small_image: `https://flagcdn.com/w80/${exit.countryCode.toLowerCase()}.png`, small_text: exit.city ? `${exit.city}, ${exit.country}` : exit.country } : {})
+    },
     buttons: [{ label: 'Get Bridge', url: 'https://github.com/m4hdisa/Bridge-app/releases/latest' }]
   }
 }
@@ -480,13 +492,14 @@ handle('removeSubscription', (id: string) => {
 })
 
 handle('updateSettings', async (patch: Partial<Settings>) => {
-  // Auto ping, Auto server and the Discord activity don't change the running connection.
-  const connectionPart = ({ autoPing: _p, autoServer: _a, discordActivity: _d, ...rest }: Settings) => JSON.stringify(rest)
+  // Auto ping, Auto server, the Discord activity and the language don't change the running connection.
+  const connectionPart = ({ autoPing: _p, autoServer: _a, showInDiscord: _d, language: _l, ...rest }: Settings) => JSON.stringify(rest)
   const before = connectionPart(store.state.settings)
   const pingWasOn = store.state.settings.autoPing
   store.update((s) => Object.assign(s.settings, patch))
   pushState()
-  discord.setEnabled(store.state.settings.discordActivity)
+  discord.setEnabled(store.state.settings.showInDiscord)
+  updateTray()
   if (!pingWasOn) autoPing('turned on')
   if (connectionPart(store.state.settings) !== before) await reconnectIfRunning()
 })
@@ -577,16 +590,17 @@ function updateTray(): void {
   if (!tray) return
   const running = core.status.state === 'running'
   const server = store.state.servers.find((s) => s.id === store.state.selectedServerId)
-  tray.setToolTip(running ? `Bridge: connected (${server?.name ?? ''})` : 'Bridge: disconnected')
+  const fa = store.state.settings.language === 'fa'
+  tray.setToolTip(running ? (fa ? `Bridge: وصل (${server?.name ?? ''})` : `Bridge: connected (${server?.name ?? ''})`) : fa ? 'Bridge: قطع' : 'Bridge: disconnected')
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Open Bridge', click: showWindow },
+      { label: fa ? 'باز کردن Bridge' : 'Open Bridge', click: showWindow },
       { type: 'separator' },
       running
-        ? { label: 'Disconnect', click: () => void core.stop() }
-        : { label: 'Connect', enabled: !!server, click: () => void connect().catch((e) => core.log(String(e.message ?? e), 'error')) },
+        ? { label: fa ? 'قطع اتصال' : 'Disconnect', click: () => void core.stop() }
+        : { label: fa ? 'اتصال' : 'Connect', enabled: !!server, click: () => void connect().catch((e) => core.log(String(e.message ?? e), 'error')) },
       { type: 'separator' },
-      { label: 'Quit', click: () => { quitting = true; app.quit() } }
+      { label: fa ? 'خروج' : 'Quit', click: () => { quitting = true; app.quit() } }
     ])
   )
 }
@@ -602,7 +616,7 @@ app.whenReady().then(async () => {
   tray = new Tray(nativeImage.createFromPath(iconPath()).resize({ width: 16, height: 16 }))
   tray.on('click', showWindow)
   updateTray()
-  discord.setEnabled(store.state.settings.discordActivity)
+  discord.setEnabled(store.state.settings.showInDiscord)
   // Keep subscriptions (configs, usage, expiry) and every server's ping current without the
   // user pressing Update or Test.
   setTimeout(() => void refreshDueSubscriptions().then(() => autoPing('startup')), 10_000)

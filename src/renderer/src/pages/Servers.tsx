@@ -4,6 +4,7 @@ import { WARP_METHODS, type ImportResult, type ServerProfile, type Subscription,
 import { api, type PageProps } from '../App'
 import { ago, bytes } from '../format'
 import { cn } from '@/lib/utils'
+import { t } from '@/i18n'
 import { CloudflareMark, EmptyState, Flag, LatencyPill, PageHeader } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 const DAY = 86400_000
 
 function importMessage(r: ImportResult): string {
-  return r.errors.length ? `${r.added} added · ${r.errors.length} not supported` : `${r.added} server${r.added === 1 ? '' : 's'} added`
+  return r.errors.length ? t('{added} added · {skipped} not supported', { added: r.added, skipped: r.errors.length }) : t(r.added === 1 ? '{n} server added' : '{n} servers added', { n: r.added })
 }
 
 export function Servers({ state, status, run }: PageProps) {
@@ -37,51 +38,54 @@ export function Servers({ state, status, run }: PageProps) {
   const warpConfigs = state.servers.filter((s) => s.engine === 'aether' && !!s.warp?.peer)
   const manual = state.servers.filter((s) => !s.subscriptionId && s.engine !== 'aether')
   const empty = !state.servers.length && !state.subscriptions.length
-  const addWarp = () => run(() => api.addWarpServer(), () => 'Free WARP server selected')
+  const addWarp = () => run(() => api.addWarpServer(), () => t('Free WARP server selected'))
 
   return (
     <>
       <PageHeader
-        title="Servers"
+        title={t('Servers')}
         description={
           state.settings.autoServer
-            ? "Auto is on: Bridge uses the server with the best ping (highlighted). Picking a server here turns Auto off."
-            : "Subscriptions and configs. The highlighted server is the one Bridge connects to."
+            ? t('Auto is on: Bridge uses the server with the best ping (highlighted). Picking a server here turns Auto off.')
+            : t('Subscriptions and configs. The highlighted server is the one Bridge connects to.')
         }
         actions={
           <>
-            {!warp && (
-              <Button variant="outline" onClick={addWarp}>
-                <Cloud />
-                Free WARP
-              </Button>
-            )}
             <Button variant="outline" disabled={!!testing || !state.servers.length} onClick={() => test('all')}>
               <Zap className={cn(testing === 'all' && 'animate-pulse')} />
-              {testing === 'all' ? 'Testing…' : 'Test all'}
+              {testing === 'all' ? t('Testing…') : t('Test all')}
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline">
-                  <ClipboardPaste />
-                  Import
+                <Button>
+                  <Plus />
+                  {t('Add servers')}
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuItem onClick={() => setSubOpen(true)}>
+                  <Link2 />
+                  {t('Subscription link…')}
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => run(() => api.importClipboard(), importMessage)}>
                   <ClipboardPaste />
-                  From clipboard
+                  {t('Links from clipboard')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setPasteOpen(true)}>
                   <FileText />
-                  Paste links…
+                  {t('Paste links…')}
                 </DropdownMenuItem>
+                {!warp && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={addWarp}>
+                      <Cloud />
+                      {t('Free WARP server')}
+                    </DropdownMenuItem>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
-            <Button onClick={() => setSubOpen(true)}>
-              <Plus />
-              Add subscription
-            </Button>
           </>
         }
       />
@@ -91,21 +95,21 @@ export function Servers({ state, status, run }: PageProps) {
           <Card>
             <EmptyState
               icon={ServerIcon}
-              title="No servers yet"
-              description="Add your subscription link, or copy a vless:// / vmess:// / trojan:// / ss:// / hysteria2:// link and import it from the clipboard. No server yet? Use the free Cloudflare WARP server."
+              title={t('No servers yet')}
+              description={t('Add your subscription link, or copy a vless:// / vmess:// / trojan:// / ss:// / hysteria2:// link and import it from the clipboard. No server yet? Use the free Cloudflare WARP server.')}
               action={
                 <div className="flex flex-wrap justify-center gap-2">
                   <Button variant="outline" onClick={addWarp}>
                     <Cloud />
-                    Use free WARP
+                    {t('Use free WARP')}
                   </Button>
                   <Button variant="outline" onClick={() => run(() => api.importClipboard(), importMessage)}>
                     <ClipboardPaste />
-                    Import from clipboard
+                    {t('Import from clipboard')}
                   </Button>
                   <Button onClick={() => setSubOpen(true)}>
                     <Plus />
-                    Add subscription
+                    {t('Add subscription')}
                   </Button>
                 </div>
               }
@@ -139,12 +143,12 @@ export function Servers({ state, status, run }: PageProps) {
         {manual.length > 0 && (
           <Card>
             <CardHeader>
-              <CardTitle>Manual configs</CardTitle>
-              <CardDescription>Imported from links.</CardDescription>
+              <CardTitle>{t('Manual configs')}</CardTitle>
+              <CardDescription>{t('Imported from links.')}</CardDescription>
               <CardAction>
                 <Button variant="ghost" size="sm" disabled={!!testing} onClick={() => test('manual', manual.map((s) => s.id))}>
                   <Zap />
-                  Test
+                  {t('Test')}
                 </Button>
               </CardAction>
             </CardHeader>
@@ -187,18 +191,18 @@ function SubscriptionCard(props: {
     <Card className={cn((sub.lastError || expired) && 'border-destructive/40')}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Link2 className="text-primary size-4" />
-          {sub.name || 'Subscription'}
+          <Link2 className="text-brand size-4" />
+          {sub.name || t('Subscription')}
         </CardTitle>
         <CardDescription className="truncate font-mono text-xs">{sub.url}</CardDescription>
         <CardAction className="flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon-sm" disabled={testing || !servers.length} onClick={() => onTest(servers.map((s) => s.id))}>
-                <Zap className={cn(testing && 'animate-pulse text-primary')} />
+                <Zap className={cn(testing && 'animate-pulse text-brand')} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Test latency</TooltipContent>
+            <TooltipContent>{t('Test latency')}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -215,7 +219,7 @@ function SubscriptionCard(props: {
                 <RefreshCw className={cn(updating && 'animate-spin')} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Update now</TooltipContent>
+            <TooltipContent>{t('Update now')}</TooltipContent>
           </Tooltip>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -224,14 +228,14 @@ function SubscriptionCard(props: {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => run(() => navigator.clipboard.writeText(sub.url), () => 'Subscription URL copied')}>
+              <DropdownMenuItem onClick={() => run(() => navigator.clipboard.writeText(sub.url), () => t('Subscription URL copied'))}>
                 <Copy />
-                Copy URL
+                {t('Copy URL')}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onClick={() => run(() => api.removeSubscription(sub.id), () => `Removed ${sub.name || 'subscription'}`)}>
                 <Trash2 />
-                Remove subscription
+                {t('Remove subscription')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -239,12 +243,12 @@ function SubscriptionCard(props: {
       </CardHeader>
 
       <CardContent className="flex flex-col gap-4">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Tile label="Traffic">
+        <div className="bg-muted/20 grid grid-cols-2 overflow-hidden rounded-lg border md:grid-cols-4">
+          <Tile label={t('Traffic')} className="border-b md:border-b-0">
             {u && !u.total && u.remaining !== undefined ? (
               <>
-                <div className="tabular font-medium">{bytes(u.remaining)} left</div>
-                <div className="text-muted-foreground text-xs">From the config name</div>
+                <div className="tabular font-medium">{t('{size} left', { size: bytes(u.remaining) })}</div>
+                <div className="text-muted-foreground text-xs">{t('From the config name')}</div>
               </>
             ) : u && (u.total || u.upload || u.download) ? (
               <>
@@ -254,35 +258,35 @@ function SubscriptionCard(props: {
                 {u.total > 0 && <Progress value={pct} className="mt-1.5" indicatorClassName={pct > 90 ? 'bg-destructive' : pct > 70 ? 'bg-warning' : undefined} />}
               </>
             ) : (
-              <div className="text-muted-foreground">Not reported</div>
+              <div className="text-muted-foreground">{t('Not reported')}</div>
             )}
           </Tile>
-          <Tile label="Expires">
+          <Tile label={t('Expires')} className="border-b border-s md:border-b-0">
             {u?.expire ? (
               <>
-                <div className={cn('font-medium', expired ? 'text-destructive' : daysLeft! <= 3 && 'text-warning')}>{expired ? 'Expired' : `${daysLeft} days left`}</div>
+                <div className={cn('font-medium', expired ? 'text-destructive' : daysLeft! <= 3 && 'text-warning')}>{expired ? t('Expired') : t('{n} days left', { n: daysLeft! })}</div>
                 <div className="text-muted-foreground text-xs">{new Date(u.expire * 1000).toLocaleDateString()}</div>
               </>
             ) : (
-              <div className="text-muted-foreground">Never</div>
+              <div className="text-muted-foreground">{t('Never')}</div>
             )}
           </Tile>
-          <Tile label="Configs">
+          <Tile label={t('Configs')} className="md:border-l">
             <div className="font-medium">
-              {servers.length} usable <span className="text-muted-foreground font-normal">of {sub.total ?? servers.length}</span>
+              {t('{n} usable', { n: servers.length })} <span className="text-muted-foreground font-normal">{t('of {total}', { total: sub.total ?? servers.length })}</span>
             </div>
-            <div className="text-muted-foreground text-xs">{tested ? `${responding} responding` : 'Not tested yet'}</div>
+            <div className="text-muted-foreground text-xs">{tested ? t('{n} responding', { n: responding }) : t('Not tested yet')}</div>
           </Tile>
-          <Tile label="Updated">
-            <div className="font-medium">{sub.updatedAt ? ago(sub.updatedAt) : 'Never'}</div>
-            <div className="text-muted-foreground text-xs">Auto every {sub.updateHours || 12}h</div>
+          <Tile label={t('Updated')} className="border-s">
+            <div className="font-medium">{sub.updatedAt ? ago(sub.updatedAt) : t('Never')}</div>
+            <div className="text-muted-foreground text-xs">{t('Auto every {n}h', { n: sub.updateHours || 12 })}</div>
           </Tile>
         </div>
 
         {sub.lastError && (
           <Alert variant="destructive">
             <TriangleAlert />
-            <AlertDescription>Last update failed: {sub.lastError}</AlertDescription>
+            <AlertDescription>{t('Last update failed: {error}', { error: sub.lastError })}</AlertDescription>
           </Alert>
         )}
 
@@ -296,7 +300,7 @@ function SubscriptionCard(props: {
           <Collapsible>
             <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground flex cursor-pointer items-center gap-1.5 text-xs font-medium">
               <ChevronRight className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
-              {skipped.length} config{skipped.length > 1 ? 's' : ''} not supported by either core
+              {t(skipped.length > 1 ? '{n} configs not supported by either core' : '{n} config not supported by either core', { n: skipped.length })}
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-2 flex flex-col gap-1.5">
               {skipped.map((c, i) => (
@@ -316,10 +320,11 @@ function SubscriptionCard(props: {
   )
 }
 
-function Tile({ label, children }: { label: string; children: ReactNode }) {
+/** One cell of the subscription's summary box. */
+function Tile({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
   return (
-    <div className="bg-muted/30 flex min-w-0 flex-col gap-0.5 rounded-lg border px-3 py-2.5 text-sm">
-      <div className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">{label}</div>
+    <div className={cn('flex min-w-0 flex-col gap-0.5 px-3.5 py-2.5 text-sm', className)}>
+      <div className="text-muted-foreground text-xs font-medium">{label}</div>
       {children}
     </div>
   )
@@ -344,32 +349,32 @@ function WarpCard({
     setFinding(true)
     await run(
       () => api.findWarpConfigs(),
-      (n) => (n ? `${n} config${n === 1 ? '' : 's'} found` : 'No way through found on this network right now')
+      (n) => (n ? t(n === 1 ? '{n} config found' : '{n} configs found', { n }) : t('No way through found on this network right now'))
     )
     setFinding(false)
   }
   const method = s.warp?.method ?? 'auto'
-  const hint = method === 'auto' ? 'Tries every way at once. Prefers Gool, whose exit is outside Iran; otherwise keeps the first one that works. If Gool misses, the next connects for a few hours don\'t wait for it.' : WARP_METHODS.find((m) => m.id === method)?.hint
+  const hint = method === 'auto' ? t('Tries every way at once. Prefers Gool, whose exit is outside Iran; otherwise keeps the first one that works. If Gool misses, the next connects for a few hours don\'t wait for it.') : t(WARP_METHODS.find((m) => m.id === method)?.hint ?? '')
   return (
-    <Card className={cn(selected && 'border-primary/50')}>
+    <Card className={cn(selected && 'border-brand/50')}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <CloudflareMark />
-          Free WARP
-          <Badge variant="success">Free</Badge>
+          {t('Free WARP')}
+          <Badge variant="success">{t('Free')}</Badge>
         </CardTitle>
         <CardDescription>
-          Cloudflare WARP, no config or subscription needed. Bridge finds a way through your network each time you connect, which can take up to a minute; a saved config below connects in seconds. Sites see a Cloudflare address, and some of them ask for a captcha.
+          {t('Cloudflare WARP, no config or subscription needed. Bridge finds a way through your network each time you connect, which can take up to a minute; a saved config below connects in seconds. Sites see a Cloudflare address, and some of them ask for a captcha.')}
         </CardDescription>
         <CardAction className="flex items-center gap-1">
           {selected ? (
             <Badge variant="primary">
               <Check />
-              In use
+              {t('In use')}
             </Badge>
           ) : (
             <Button size="sm" onClick={() => run(() => api.selectServer(s.id))}>
-              Use
+              {t('Use')}
             </Button>
           )}
           <DropdownMenu>
@@ -379,9 +384,9 @@ function WarpCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem variant="destructive" onClick={() => run(() => api.removeServer(s.id), () => 'Free WARP removed')}>
+              <DropdownMenuItem variant="destructive" onClick={() => run(() => api.removeServer(s.id), () => t('Free WARP removed'))}>
                 <Trash2 />
-                Remove
+                {t('Remove')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -389,16 +394,16 @@ function WarpCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-3">
-          <Label className="text-sm">Connection method</Label>
+          <Label className="text-sm">{t('Connection method')}</Label>
           <Select value={method} onValueChange={(v) => run(() => api.setWarpMethod(s.id, v as WarpOptions['method']))}>
             <SelectTrigger className="w-60">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="auto">Auto (recommended)</SelectItem>
+              <SelectItem value="auto">{t('Auto (recommended)')}</SelectItem>
               {WARP_METHODS.map((m) => (
                 <SelectItem key={m.id} value={m.id}>
-                  {m.label}
+                  {t(m.label)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -409,16 +414,16 @@ function WarpCard({
         <div className="mt-3 flex flex-col gap-2 border-t pt-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="text-sm font-medium">Saved configs</div>
+              <div className="text-sm font-medium">{t('Saved configs')}</div>
               <p className="text-muted-foreground text-xs">
                 {connected
-                  ? 'Disconnect to find configs: Bridge tests every way on your own network.'
-                  : 'Tests every way through your network once and saves each one that works, with its gateway. Connecting to a saved config skips the search, so it takes seconds.'}
+                  ? t('Disconnect to find configs: Bridge tests every way on your own network.')
+                  : t('Tests every way through your network once and saves each one that works, with its gateway. Connecting to a saved config skips the search, so it takes seconds.')}
               </p>
             </div>
             <Button size="sm" variant="outline" disabled={finding || connected} onClick={find}>
               <RefreshCw className={cn(finding && 'animate-spin')} />
-              {finding ? 'Finding… (up to 1.5 min)' : configs.length ? 'Find again' : 'Find configs'}
+              {finding ? t('Finding… (up to 1.5 min)') : configs.length ? t('Find again') : t('Find configs')}
             </Button>
           </div>
           {configs.length > 0 && (
@@ -446,15 +451,15 @@ function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; se
       onKeyDown={(e) => e.key === 'Enter' && pick()}
       className={cn(
         'group flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-        selected ? 'border-primary/50 bg-primary/8' : 'hover:bg-muted/40 border-transparent'
+        selected ? 'border-brand/50 bg-primary/8' : 'hover:bg-muted/40 border-transparent'
       )}
     >
-      <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full border-2', selected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40')}>
+      <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full border-2', selected ? 'border-brand bg-primary text-primary-foreground' : 'border-muted-foreground/40')}>
         {selected && <Check className="size-3" strokeWidth={3.5} />}
       </span>
       <CloudflareMark />
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-sm font-medium">{label}</span>
+        <span className="truncate text-sm font-medium">{t(label)}</span>
         <span className="text-muted-foreground truncate font-mono text-xs">{w.peer}</span>
       </div>
       {w.exit && (
@@ -465,10 +470,10 @@ function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; se
               {w.exit}
             </span>
           </TooltipTrigger>
-          <TooltipContent>{w.exit === 'IR' ? 'Cloudflare registers this exit in Iran: filtering is bypassed, but some sites block Iranian users' : 'Exit country Cloudflare gave this config'}</TooltipContent>
+          <TooltipContent>{w.exit === 'IR' ? t('Cloudflare registers this exit in Iran: filtering is bypassed, but some sites block Iranian users') : t('Exit country Cloudflare gave this config')}</TooltipContent>
         </Tooltip>
       )}
-      {w.readyMs !== undefined && <span className="text-muted-foreground tabular w-12 text-right text-xs">{(w.readyMs / 1000).toFixed(1)} s</span>}
+      {w.readyMs !== undefined && <span className="text-muted-foreground tabular w-12 text-end text-xs">{(w.readyMs / 1000).toFixed(1)} s</span>}
       <Button
         variant="ghost"
         size="icon-sm"
@@ -495,10 +500,10 @@ function ServerRow({ server: s, selected, pinging, run }: { server: ServerProfil
       onKeyDown={(e) => e.key === 'Enter' && !selected && run(() => api.selectServer(s.id))}
       className={cn(
         'group flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-        selected ? 'border-primary/50 bg-primary/8' : 'hover:bg-muted/40 border-transparent'
+        selected ? 'border-brand/50 bg-primary/8' : 'hover:bg-muted/40 border-transparent'
       )}
     >
-      <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full border-2', selected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40')}>
+      <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full border-2', selected ? 'border-brand bg-primary text-primary-foreground' : 'border-muted-foreground/40')}>
         {selected && <Check className="size-3" strokeWidth={3.5} />}
       </span>
       <div className="min-w-0 flex-1">
@@ -512,9 +517,9 @@ function ServerRow({ server: s, selected, pinging, run }: { server: ServerProfil
       </Badge>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Badge variant={engine === 'xray' ? 'warning' : 'secondary'}>{engine === 'xray' ? 'Xray' : 'sing-box'}</Badge>
+          <Badge variant={engine === 'xray' ? 'warning' : 'secondary'}>{engine === 'xray' ? t('Xray') : 'sing-box'}</Badge>
         </TooltipTrigger>
-        <TooltipContent>{s.xrayOnly ? 'Only the Xray core supports this config' : canSwitch ? 'Both cores can run this; switch in the menu' : 'Runs on sing-box'}</TooltipContent>
+        <TooltipContent>{s.xrayOnly ? t('Only the Xray core supports this config') : canSwitch ? t('Both cores can run this; switch in the menu') : t('Runs on sing-box')}</TooltipContent>
       </Tooltip>
       <LatencyPill ms={s.latency} pinging={pinging} className="w-16 justify-center" />
       <DropdownMenu>
@@ -527,27 +532,27 @@ function ServerRow({ server: s, selected, pinging, run }: { server: ServerProfil
           {!selected && (
             <DropdownMenuItem onClick={() => run(() => api.selectServer(s.id))}>
               <Check />
-              Use this server
+              {t('Use this server')}
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onClick={() => run(() => api.testLatency([s.id]))}>
             <Zap />
-            Test latency
+            {t('Test latency')}
           </DropdownMenuItem>
           {canSwitch && (
-            <DropdownMenuItem onClick={() => run(() => api.setServerEngine(s.id, engine === 'xray' ? 'sing-box' : 'xray'), () => `Now runs on ${engine === 'xray' ? 'sing-box' : 'Xray'}`)}>
+            <DropdownMenuItem onClick={() => run(() => api.setServerEngine(s.id, engine === 'xray' ? 'sing-box' : 'xray'), () => t('Now runs on {core}', { core: engine === 'xray' ? 'sing-box' : 'Xray' }))}>
               <Repeat />
-              Run on {engine === 'xray' ? 'sing-box' : 'Xray'}
+              {t('Run on {core}', { core: engine === 'xray' ? 'sing-box' : 'Xray' })}
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onClick={() => run(() => navigator.clipboard.writeText(s.link), () => 'Link copied')}>
+          <DropdownMenuItem onClick={() => run(() => navigator.clipboard.writeText(s.link), () => t('Link copied'))}>
             <Copy />
-            Copy link
+            {t('Copy link')}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive" onClick={() => run(() => api.removeServer(s.id))}>
             <Trash2 />
-            Delete
+            {t('Delete')}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -561,13 +566,13 @@ function PasteDialog({ open, onOpenChange, run }: { open: boolean; onOpenChange:
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Paste links</DialogTitle>
-          <DialogDescription>One share link per line, or a base64 subscription body.</DialogDescription>
+          <DialogTitle>{t('Paste links')}</DialogTitle>
+          <DialogDescription>{t('One share link per line, or a base64 subscription body.')}</DialogDescription>
         </DialogHeader>
-        <Textarea rows={7} className="font-mono text-xs" placeholder="vless://…&#10;vmess://…&#10;trojan://…" value={text} onChange={(e) => setText(e.target.value)} autoFocus />
+        <Textarea rows={7} className="font-mono text-xs" placeholder={'vless://…\nvmess://…\ntrojan://…'} value={text} onChange={(e) => setText(e.target.value)} autoFocus />
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t('Cancel')}
           </Button>
           <Button
             disabled={!text.trim()}
@@ -582,7 +587,7 @@ function PasteDialog({ open, onOpenChange, run }: { open: boolean; onOpenChange:
               )
             }
           >
-            Import
+            {t('Import')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -599,24 +604,24 @@ function SubscriptionDialog({ open, onOpenChange, run }: { open: boolean; onOpen
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add subscription</DialogTitle>
-          <DialogDescription>Bridge downloads it now and keeps it up to date automatically.</DialogDescription>
+          <DialogTitle>{t('Add subscription')}</DialogTitle>
+          <DialogDescription>{t('Bridge downloads it now and keeps it up to date automatically.')}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
           <div className="grid gap-2">
-            <Label htmlFor="sub-url">Subscription URL</Label>
-            <Input id="sub-url" placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} autoFocus />
+            <Label htmlFor="sub-url">{t('Subscription URL')}</Label>
+            <Input id="sub-url" placeholder={t('https://…')} value={url} onChange={(e) => setUrl(e.target.value)} autoFocus />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="sub-name">
-              Name <span className="text-muted-foreground font-normal">(optional, taken from the panel otherwise)</span>
+              {t('Name')}{" "}<span className="text-muted-foreground font-normal">{t('(optional, taken from the panel otherwise)')}</span>
             </Label>
-            <Input id="sub-name" placeholder="My provider" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input id="sub-name" placeholder={t('My provider')} value={name} onChange={(e) => setName(e.target.value)} />
           </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t('Cancel')}
           </Button>
           <Button
             disabled={!valid || busy}
@@ -634,7 +639,7 @@ function SubscriptionDialog({ open, onOpenChange, run }: { open: boolean; onOpen
               setBusy(false)
             }}
           >
-            {busy ? 'Adding…' : 'Add'}
+            {busy ? t('Adding…') : t('Add')}
           </Button>
         </DialogFooter>
       </DialogContent>

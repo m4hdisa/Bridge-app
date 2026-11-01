@@ -3,6 +3,7 @@ import { AppWindow, Ban, FolderOpen, Globe, Info, LoaderCircle, Plus, Search, Sh
 import type { AppAction, AppRule, RunningProcess } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { cn } from '@/lib/utils'
+import { t } from '@/i18n'
 import { AppIcon, EmptyState, PageHeader } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,6 +13,14 @@ import { Alert, AlertDescription, AlertTitle, ScrollArea } from '@/components/ui
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+
+/** Each action's color in the summary bar and its icon. */
+const ACTION_TONE: Record<AppAction, { bar: string; text: string }> = {
+  proxy: { bar: 'bg-primary', text: 'text-brand' },
+  direct: { bar: 'bg-foreground/45', text: 'text-foreground' },
+  other: { bar: 'bg-warning', text: 'text-warning' },
+  block: { bar: 'bg-destructive', text: 'text-destructive' }
+}
 
 /** Each action has its own color, so a list of rules can be read at a glance. */
 const ACTIONS: { id: AppAction; label: string; icon: typeof Shield; tip: string; on: string }[] = [
@@ -42,12 +51,13 @@ export function Apps({ state, run }: PageProps) {
   const q = filter.trim().toLowerCase()
   const rules = state.appRules.filter((r) => !q || (r.name + r.path).toLowerCase().includes(q))
   const counts = Object.fromEntries(ACTIONS.map((a) => [a.id, state.appRules.filter((r) => r.enabled && r.action === a.id).length])) as Record<AppAction, number>
+  const total = Object.values(counts).reduce((a, b) => a + b, 0)
 
   return (
     <>
       <PageHeader
-        title="Apps"
-        description="Decide, per app, where its traffic goes."
+        title={t('Apps')}
+        description={t('Decide, per app, where its traffic goes.')}
         actions={
           <>
             <Button
@@ -60,11 +70,11 @@ export function Apps({ state, run }: PageProps) {
               }
             >
               <FolderOpen />
-              Browse .exe
+              {t('Browse .exe')}
             </Button>
             <Button onClick={() => setPickerOpen(true)}>
               <Plus />
-              Add app
+              {t('Add app')}
             </Button>
           </>
         }
@@ -73,46 +83,45 @@ export function Apps({ state, run }: PageProps) {
       <div className="flex flex-col gap-4">
         <Alert>
           {mode === 'per-app' ? <Split /> : <Info />}
-          <AlertTitle>{help.title}</AlertTitle>
-          <AlertDescription>{help.text}</AlertDescription>
+          <AlertTitle>{t(help.title)}</AlertTitle>
+          <AlertDescription>{t(help.text)}</AlertDescription>
         </Alert>
 
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          {ACTIONS.map(({ id, label, icon: Icon, tip }) => (
-            <Tooltip key={id}>
-              <TooltipTrigger asChild>
-                <div className="bg-card flex items-center gap-3 rounded-xl border px-4 py-3">
-                  <span
-                    className={cn(
-                      'flex size-8 items-center justify-center rounded-lg',
-                      id === 'proxy' && 'bg-primary/15 text-primary',
-                      id === 'direct' && 'bg-foreground/10 text-foreground',
-                      id === 'other' && 'bg-warning/15 text-warning',
-                      id === 'block' && 'bg-destructive/15 text-destructive'
-                    )}
-                  >
-                    <Icon className="size-4" />
-                  </span>
-                  <div>
-                    <div className="tabular text-lg leading-tight font-semibold">{counts[id]}</div>
-                    <div className="text-muted-foreground text-xs">{label}</div>
-                  </div>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>{tip}</TooltipContent>
-            </Tooltip>
-          ))}
-        </div>
+        <Card className="gap-4 py-4">
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex h-2 gap-1 overflow-hidden rounded-full" aria-hidden>
+              {total ? (
+                ACTIONS.filter((a) => counts[a.id]).map((a) => <span key={a.id} className={cn('h-full rounded-full', ACTION_TONE[a.id].bar)} style={{ flexGrow: counts[a.id] }} />)
+              ) : (
+                <span className="bg-muted h-full flex-1 rounded-full" />
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              {ACTIONS.map(({ id, label, icon: Icon, tip }) => (
+                <Tooltip key={id}>
+                  <TooltipTrigger asChild>
+                    <div className="flex cursor-default items-center gap-2 text-sm">
+                      <Icon className={cn('size-4', ACTION_TONE[id].text)} />
+                      <span className="tabular font-semibold">{counts[id]}</span>
+                      <span className="text-muted-foreground">{t(label)}</span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>{t(tip)}</TooltipContent>
+                </Tooltip>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Rules</CardTitle>
-            <CardDescription>Changes apply instantly, without reconnecting.</CardDescription>
+            <CardTitle>{t('Rules')}</CardTitle>
+            <CardDescription>{t('Changes apply instantly, without reconnecting.')}</CardDescription>
             {state.appRules.length > 4 && (
               <CardAction>
                 <div className="relative w-56">
-                  <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
-                  <Input className="h-8 pl-8" placeholder="Filter apps" value={filter} onChange={(e) => setFilter(e.target.value)} />
+                  <Search className="text-muted-foreground absolute top-1/2 start-2.5 size-4 -translate-y-1/2" />
+                  <Input className="h-8 ps-8" placeholder={t('Filter apps')} value={filter} onChange={(e) => setFilter(e.target.value)} />
                 </div>
               </CardAction>
             )}
@@ -121,12 +130,12 @@ export function Apps({ state, run }: PageProps) {
             {!state.appRules.length && (
               <EmptyState
                 icon={AppWindow}
-                title="No apps yet"
-                description="Add the apps that should use the VPN (or that another tool should carry). Apps not listed here are left alone."
+                title={t('No apps yet')}
+                description={t('Add the apps that should use the VPN (or that another tool should carry). Apps not listed here are left alone.')}
                 action={
                   <Button onClick={() => setPickerOpen(true)}>
                     <Plus />
-                    Add app
+                    {t('Add app')}
                   </Button>
                 }
               />
@@ -134,7 +143,7 @@ export function Apps({ state, run }: PageProps) {
             {rules.map((r) => (
               <RuleRow key={r.id} rule={r} run={run} />
             ))}
-            {state.appRules.length > 0 && !rules.length && <p className="text-muted-foreground py-6 text-center text-sm">No apps match “{filter}”.</p>}
+            {state.appRules.length > 0 && !rules.length && <p className="text-muted-foreground py-6 text-center text-sm">{t('No apps match “{q}”.', { q: filter })}</p>}
           </CardContent>
         </Card>
       </div>
@@ -153,7 +162,7 @@ function RuleRow({ rule: r, run }: { rule: AppRule; run: PageProps['run'] }) {
             <Switch checked={r.enabled} onCheckedChange={(v) => run(() => api.saveAppRule({ ...r, enabled: v }))} />
           </span>
         </TooltipTrigger>
-        <TooltipContent>{r.enabled ? 'Rule on' : 'Rule off (app left alone)'}</TooltipContent>
+        <TooltipContent>{r.enabled ? t('Rule on') : t('Rule off (app left alone)')}</TooltipContent>
       </Tooltip>
       <AppIcon src={r.icon} />
       <div className="min-w-0 flex-1">
@@ -165,9 +174,9 @@ function RuleRow({ rule: r, run }: { rule: AppRule; run: PageProps['run'] }) {
       <ToggleGroup type="single" value={r.action} onValueChange={(v) => v && run(() => api.saveAppRule({ ...r, action: v as AppAction }))} disabled={!r.enabled}>
         {/* No Tooltip wrapper here: its trigger sets data-state and would hide the selected state. */}
         {ACTIONS.map(({ id, label, icon: Icon, tip, on }) => (
-          <ToggleGroupItem key={id} value={id} title={tip} className={cn('h-7 px-2.5 text-xs', on)}>
+          <ToggleGroupItem key={id} value={id} title={t(tip)} className={cn('h-7 px-2.5 text-xs', on)}>
             <Icon className="size-3.5" />
-            {label}
+            {t(label)}
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
@@ -177,7 +186,7 @@ function RuleRow({ rule: r, run }: { rule: AppRule; run: PageProps['run'] }) {
             <Trash2 />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Remove (the app is left alone again)</TooltipContent>
+        <TooltipContent>{t('Remove (the app is left alone again)')}</TooltipContent>
       </Tooltip>
     </div>
   )
@@ -221,30 +230,30 @@ function AppPicker({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Add a running app</DialogTitle>
-          <DialogDescription>Start the app first if it isn't listed, or use “Browse .exe”.</DialogDescription>
+          <DialogTitle>{t('Add a running app')}</DialogTitle>
+          <DialogDescription>{t('Start the app first if it isn\'t listed, or use “Browse .exe”.')}</DialogDescription>
         </DialogHeader>
         <div className="relative">
-          <Search className="text-muted-foreground absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-          <Input className="pl-9" placeholder="Search apps" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
+          <Search className="text-muted-foreground absolute top-1/2 start-3 size-4 -translate-y-1/2" />
+          <Input className="ps-9" placeholder={t('Search apps')} value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
         </div>
         <ScrollArea className="h-80 rounded-lg border">
           <div className="flex flex-col p-1.5">
             {!list && (
               <div className="text-muted-foreground flex items-center justify-center gap-2 py-16 text-sm">
                 <LoaderCircle className="size-4 animate-spin" />
-                Looking for running apps…
+                {t('Looking for running apps…')}
               </div>
             )}
-            {list && !shown.length && <p className="text-muted-foreground py-16 text-center text-sm">No other apps found.</p>}
+            {list && !shown.length && <p className="text-muted-foreground py-16 text-center text-sm">{t('No other apps found.')}</p>}
             {shown.map((p) => (
-              <button key={p.path} onClick={() => onAdd(p)} className="hover:bg-accent group flex cursor-pointer items-center gap-3 rounded-md px-2.5 py-2 text-left">
+              <button key={p.path} onClick={() => onAdd(p)} className="hover:bg-accent group flex cursor-pointer items-center gap-3 rounded-md px-2.5 py-2 text-start">
                 <AppIcon src={p.icon} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{p.name}</div>
                   <div className="text-muted-foreground truncate text-xs">{p.path}</div>
                 </div>
-                <Plus className="text-muted-foreground group-hover:text-primary size-4" />
+                <Plus className="text-muted-foreground group-hover:text-brand size-4" />
               </button>
             ))}
           </div>

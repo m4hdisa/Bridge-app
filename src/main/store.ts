@@ -14,7 +14,8 @@ export const DEFAULT_SETTINGS: Settings = {
   logLevel: 'info',
   autoPing: true,
   autoServer: false,
-  discordActivity: false
+  showInDiscord: true,
+  language: 'en'
 }
 
 export class Store {

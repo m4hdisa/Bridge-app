@@ -1,9 +1,6 @@
 // Bridge's logo geometry, shared by the app (SVG) and scripts/make-icon.ts (the PNG app icon),
 // so the window, the sidebar and the installer show the same mark.
 
-/** The connect button's shield, in a 100 x 120 box centred on (50, 60): flat-topped, pointed at the bottom. */
-export const SHIELD_PATH = 'M50 4 L88.5 17.6 Q93 19.2 93 24 V55 Q93 86 52.6 115.2 Q50 117 47.4 115.2 Q7 86 7 55 V24 Q7 19.2 11.5 17.6 Z'
-
 /** The brand blue: the logo's tile, and the app's primary color. */
 export const LOGO_COLOR = '#023ee8'
 

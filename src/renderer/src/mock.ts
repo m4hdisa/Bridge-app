@@ -33,7 +33,7 @@ export function createMockBridge(): BridgeApi {
       { id: 'r2', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
       { id: 'r3', name: 'steam.exe', path: 'C:\\Program Files (x86)\\Steam\\steam.exe', action: 'direct', enabled: false }
     ],
-    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info', autoPing: true, autoServer: false, discordActivity: false }
+    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info', autoPing: true, autoServer: false, showInDiscord: true, language: 'en' }
   }
   let status: CoreStatus = { state: 'stopped' }
   const logs: LogLine[] = [{ time: Date.now(), level: 'info', text: 'Mock backend: running in the browser, nothing is real.' }]
@@ -156,8 +156,17 @@ export function createMockBridge(): BridgeApi {
     ],
     pickExe: async () => ({ name: 'example.exe', path: 'C:\\Apps\\example.exe' }),
     connect: async () => {
-      setStatus({ state: 'starting', mode: state.settings.mode })
-      await wait(700)
+      // Like the real app: a few steps the Dashboard shows while connecting.
+      const connectingAt = Date.now()
+      for (const progress of ['Checking your network', 'Finding a way through your network (trying 5 at once)', 'Starting the VPN adapter']) {
+        setStatus({ state: 'starting', mode: state.settings.mode, connectingAt, progress })
+        await wait(1200)
+      }
+      // A server whose name says "Fail" (or localStorage "bridge.mockFail") shows the failed-connect state.
+      if (state.servers.find((s) => s.id === state.selectedServerId)?.name.includes('Fail') || localStorage.getItem('bridge.mockFail')) {
+        setStatus({ state: 'stopped', error: 'Free WARP could not connect on this network. Gool: no working gateway within 75 s; MASQUE over HTTP/2: stopped (exit code 1)' })
+        throw new Error('Free WARP could not connect on this network')
+      }
       const now = Date.now()
       setStatus({
         state: 'running',
@@ -200,12 +209,13 @@ export function createMockBridge(): BridgeApi {
     checkHealth: async () => {
       await wait(600)
       const now = Date.now()
-      const down = status.health?.server?.ok
+      // localStorage "bridge.mockHealthy" keeps the server healthy (for screenshots).
+      const down = status.health?.server?.ok && !localStorage.getItem('bridge.mockHealthy')
       setStatus({
         ...status,
         health: {
-          server: down ? { ok: false, error: 'No response (timeout)', checkedAt: now } : { ok: true, latency: 398, checkedAt: now },
-          internet: { ok: true, latency: 88, checkedAt: now }
+          server: down ? { ok: false, error: 'No response (timeout)', checkedAt: now } : { ok: true, latency: 380 + Math.round(Math.random() * 90), checkedAt: now },
+          internet: { ok: true, latency: 80 + Math.round(Math.random() * 25), checkedAt: now }
         }
       })
     },

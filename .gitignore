@@ -7,3 +7,6 @@ resources/aether/
 resources/rules/
 *.log
 *.tsbuildinfo
+
+# Yekan Bakh is a commercial font (fontiran.com): bundled under the owner's license, never published.
+src/renderer/public/fonts/yekan-bakh/

@@ -25,8 +25,8 @@ export interface DiscordActivity {
   state?: string
   /** Milliseconds since the epoch; Discord counts up from it ("01:23 elapsed"). */
   timestamps?: { start?: number }
-  /** Keys of images uploaded under Rich Presence → Art Assets in the developer portal. */
-  assets?: { large_image?: string; large_text?: string }
+  /** Images: keys uploaded under Rich Presence → Art Assets, or https URLs. The small one sits on the large one's corner. */
+  assets?: { large_image?: string; large_text?: string; small_image?: string; small_text?: string }
   buttons?: { label: string; url: string }[]
 }
 

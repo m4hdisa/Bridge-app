@@ -158,8 +158,13 @@ export interface Settings {
    * server if the current one stops responding. Chosen with selectServer(AUTO_SERVER).
    */
   autoServer: boolean
-  /** Show the connection status as the user's Discord activity (while the Discord app runs). Off by default. */
-  discordActivity: boolean
+  /**
+   * Show the connection status as the user's Discord activity (while the Discord app runs). On by
+   * default. (0.4.5 called it discordActivity and had it off; the new name drops that saved value.)
+   */
+  showInDiscord: boolean
+  /** The app's language: English, or Persian (right to left, Yekan Bakh). */
+  language: 'en' | 'fa'
 }
 
 /** Server id the UI passes to selectServer() to turn on Auto (best ping). */
@@ -200,6 +205,9 @@ export interface CoreStatus {
   mode?: ConnectionMode
   serverId?: string
   startedAt?: number
+  /** While connecting: when it began, and what Bridge is doing right now ("Finding a way through your network"). */
+  connectingAt?: number
+  progress?: string
   error?: string
   /** Checked right after connecting and then every 20 seconds while connected. */
   health?: Health

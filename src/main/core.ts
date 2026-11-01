@@ -357,6 +357,7 @@ export class Core extends EventEmitter {
     const config = join(this.warpDir, 'aether.toml')
     const done = () => existsSync(join(this.warpDir, WARP_IDENTITY_FILE))
     this.log('Free WARP: creating a WARP account (first use only, can take a few minutes)')
+    this.progress('Creating a free WARP account (first time only)')
     for (const t of WARP_REGISTER_TRIES) {
       const helper = t.via ? await this.startWarpHelper() : undefined
       checkCancelled()
@@ -390,9 +391,11 @@ export class Core extends EventEmitter {
     let winner: WarpWinner | undefined
     if (peer && methods.length === 1) {
       this.log(`Free WARP: connecting with ${warpLabel(methods[0])} on the saved gateway ${peer}`)
+      this.progress('Connecting to the saved WARP config')
       winner = await this.launchWarp(methods[0], await freePort(), { peer, timeoutMs: WARP_PEER_MS }).catch((e) => {
         this.checkCancelled(gen)
         this.log(`Free WARP: the saved gateway didn't answer (${e instanceof Error ? e.message : e}); scanning for another`, 'warn')
+        this.progress("The saved config didn't answer; looking for another way")
         return undefined
       })
       this.checkCancelled(gen)
@@ -423,6 +426,7 @@ export class Core extends EventEmitter {
   /** Races `methods` (each on its own port) and returns the winner; see raceWarp. */
   private async raceWarpMethods(methods: WarpMethod[], gen: number): Promise<WarpWinner> {
     this.log(`Free WARP: looking for a way through (${methods.map(warpLabel).join(', ')})`)
+    this.progress(methods.length > 1 ? `Finding a way through your network (trying ${methods.length} at once)` : `Connecting with ${warpLabel(methods[0])}`)
     const attempts = await Promise.all(methods.map(async (method) => ({ method, port: await freePort() })))
     const state = this.readWarpState()
     const triesGool = methods.length > 1 && methods.some(prefersForeignExit)
@@ -525,6 +529,7 @@ export class Core extends EventEmitter {
             fallback = w
             if (!preferred.size) return finish(w)
             this.log(`Free WARP: ${warpLabel(a.method)} works; waiting up to ${WARP_PREFER_WAIT_MS / 1000} s for Gool, which exits outside Iran`)
+            this.progress('Found a way. Giving Gool a few seconds for an exit outside Iran')
             wait = setTimeout(() => finish(w), WARP_PREFER_WAIT_MS)
           },
           (e) => {
@@ -554,6 +559,11 @@ export class Core extends EventEmitter {
     this.emit('status', s)
   }
 
+  /** While connecting, tells the window what Bridge is doing now, so a long connect isn't a mystery. */
+  private progress(text: string): void {
+    if (this.status.state === 'starting') this.setStatus({ ...this.status, progress: text })
+  }
+
   /** Warned this session that an app got a censored DNS answer (see coreLine). */
   private censoredDnsWarned = false
 
@@ -576,7 +586,7 @@ export class Core extends EventEmitter {
     if (this.scanningWarp) throw new Error('Bridge is still finding WARP configs; connect when it is done')
     if (this.status.state !== 'stopped') await this.stop()
     if (!existsSync(this.paths.singBox)) throw new Error(`sing-box not found at ${this.paths.singBox}`)
-    this.setStatus({ state: 'starting', mode: settings.mode, serverId: server.id })
+    this.setStatus({ state: 'starting', mode: settings.mode, serverId: server.id, connectingAt: Date.now(), progress: 'Checking your network' })
     this.settings = settings
     this.censoredDnsWarned = false
     const gen = ++this.startGen
@@ -593,7 +603,7 @@ export class Core extends EventEmitter {
       const [localDns, pinned] = await Promise.all([
         tun ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
         // In TUN modes Xray goes straight out of the real adapter instead of looping through TUN.
-        usesWarp ? this.viaWarp(server, gen) : usesXray ? this.viaXray(server, tun ? net.interfaceAlias : undefined) : this.pinAddress(server)
+        usesWarp ? this.viaWarp(server, gen) : usesXray ? (this.progress('Starting Xray'), this.viaXray(server, tun ? net.interfaceAlias : undefined)) : this.pinAddress(server)
       ])
       this.checkCancelled(gen)
       if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? 'DNS-over-HTTPS' : 'DNS'} ${localDns.server}`)
@@ -624,6 +634,7 @@ export class Core extends EventEmitter {
       const configFile = join(this.paths.dataDir, 'config.json')
       writeFileSync(configFile, JSON.stringify(config, null, 2))
       this.log(`Starting sing-box: ${server.name} (${settings.mode})`)
+      this.progress(tun ? 'Starting the VPN adapter' : 'Starting the VPN')
 
       const child = await launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine)
       // Disconnected while sing-box was starting: stop() couldn't see this process yet.

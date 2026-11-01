@@ -1,4 +1,18 @@
+import { t } from './i18n'
+
+/**
+ * Keeps a measurement ("415 KB/s", "1h 2m") left to right inside Persian text: invisible
+ * isolate marks (LRI ... PDI), which change nothing in English.
+ */
+const LRI = String.fromCharCode(0x2066)
+const PDI = String.fromCharCode(0x2069)
+const ltr = (s: string) => LRI + s + PDI
+
 export function bytes(n: number): string {
+  return ltr(rawBytes(n))
+}
+
+function rawBytes(n: number): string {
   if (n < 1024) return `${n.toFixed(0)} B`
   const units = ['KB', 'MB', 'GB', 'TB']
   let v = n / 1024
@@ -11,7 +25,7 @@ export function bytes(n: number): string {
 }
 
 export function speed(n: number): string {
-  return `${bytes(n)}/s`
+  return ltr(`${rawBytes(n)}/s`)
 }
 
 export function duration(ms: number): string {
@@ -19,11 +33,11 @@ export function duration(ms: number): string {
   const h = Math.floor(s / 3600)
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60
-  return h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`
+  return ltr(h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`)
 }
 
 export function ago(time: number): string {
-  return `${duration(Date.now() - time)} ago`
+  return t('{time} ago', { time: duration(Date.now() - time) })
 }
 
 /** Electron wraps IPC errors as "Error invoking remote method 'x': Error: msg". */

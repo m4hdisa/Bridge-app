@@ -23,7 +23,7 @@ function DialogContent({ className, children, ...props }: React.ComponentProps<t
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="ring-offset-background focus:ring-ring absolute top-4 right-4 cursor-pointer rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:outline-hidden [&_svg:not([class*='size-'])]:size-4">
+        <DialogPrimitive.Close className="ring-offset-background focus:ring-ring absolute top-4 end-4 cursor-pointer rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:outline-hidden [&_svg:not([class*='size-'])]:size-4">
           <XIcon />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
@@ -33,7 +33,7 @@ function DialogContent({ className, children, ...props }: React.ComponentProps<t
 }
 
 function DialogHeader({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div data-slot="dialog-header" className={cn('flex flex-col gap-1.5 text-left', className)} {...props} />
+  return <div data-slot="dialog-header" className={cn('flex flex-col gap-1.5 text-start', className)} {...props} />
 }
 
 function DialogFooter({ className, ...props }: React.ComponentProps<'div'>) {

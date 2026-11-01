@@ -53,7 +53,10 @@ async function main() {
   console.log('Start (system-proxy mode, system proxy NOT changed)')
   await core.start(fake, { ...DEFAULT_SETTINGS, mode: 'system-proxy', mixedPort: port, logLevel: 'debug' }, [])
   check(core.status.state === 'running', 'core is running')
-  check(statuses.join(',') === 'starting,running', `status events: ${statuses.join(',')}`)
+  // "starting" repeats while connecting, once per progress step; what matters is the order.
+  const states = statuses.filter((s, i) => s !== statuses[i - 1])
+  check(states.join(',') === 'starting,running', `status events: ${states.join(',')}`)
+  check(statuses.length > 2, `connecting reported progress (${statuses.length - 1} starting events)`)
 
   await viaProxy()
   // The fake server is unreachable, so we only check that the request reached sing-box and was routed to it.
