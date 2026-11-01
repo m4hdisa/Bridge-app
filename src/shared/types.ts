@@ -1,6 +1,6 @@
 // Types shared by the main process (Node) and the renderer (UI).
 
-export type Protocol = 'vless' | 'vmess' | 'trojan' | 'shadowsocks' | 'hysteria2' | 'tuic'
+export type Protocol = 'vless' | 'vmess' | 'trojan' | 'shadowsocks' | 'hysteria2' | 'tuic' | 'warp'
 
 /** A sing-box outbound object, without its `tag` (the tag is assigned when the config is built). */
 export type Outbound = Record<string, unknown> & { type: Protocol }
@@ -27,9 +27,28 @@ export interface ServerProfile {
   xray?: Record<string, unknown>
   /** True when sing-box can't run this server at all (then `outbound` is only a placeholder). */
   xrayOnly?: boolean
+  /** Set on the built-in free WARP server (engine "aether"); its `outbound` is only a placeholder. */
+  warp?: WarpOptions
 }
 
-export type Engine = 'sing-box' | 'xray'
+/** "aether" runs the built-in free WARP server (Cloudflare WARP, through the Aether core). */
+export type Engine = 'sing-box' | 'xray' | 'aether'
+
+/** How the free WARP server reaches Cloudflare. Which ones get through depends on the network. */
+export type WarpMethod = 'h3' | 'h2' | 'h2-fragment' | 'h2-ipv6' | 'wireguard'
+
+export interface WarpOptions {
+  /** "auto" tries the MASQUE methods at the same time and keeps the first one that works. */
+  method: WarpMethod | 'auto'
+}
+
+export const WARP_METHODS: { id: WarpMethod; label: string; hint: string; auto: boolean }[] = [
+  { id: 'h3', label: 'MASQUE over HTTP/3', hint: 'Fastest. Needs UDP, which some networks block (often Irancell).', auto: true },
+  { id: 'h2', label: 'MASQUE over HTTP/2', hint: 'Runs over TCP, for networks that block QUIC / UDP.', auto: true },
+  { id: 'h2-fragment', label: 'HTTP/2 + fragment', hint: 'Splits the TLS handshake, for networks that reset it (some home internet).', auto: true },
+  { id: 'h2-ipv6', label: 'HTTP/2 over IPv6', hint: "For Hamrah-e Aval (MCI), which filters Cloudflare's IPv4 addresses. Needs IPv6.", auto: true },
+  { id: 'wireguard', label: 'WireGuard', hint: 'Classic WARP. Usually blocked in Iran; not tried by Auto.', auto: false }
+]
 
 /** A config in a subscription that Bridge can't use, and why. */
 export interface SkippedConfig {
@@ -235,6 +254,9 @@ export interface BridgeApi {
   selectServer(id: string): Promise<void>
   /** Switch which core runs a server (only when both can). */
   setServerEngine(id: string, engine: Engine): Promise<void>
+  /** Adds the built-in free WARP server (or returns the existing one) and selects it. */
+  addWarpServer(): Promise<void>
+  setWarpMethod(id: string, method: WarpOptions['method']): Promise<void>
   testLatency(ids?: string[]): Promise<void>
 
   addSubscription(name: string, url: string): Promise<ImportResult>

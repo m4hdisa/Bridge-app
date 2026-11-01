@@ -10,6 +10,8 @@ extraResources:
     to: core
   - from: resources/xray
     to: xray
+  - from: resources/aether
+    to: aether
   - from: resources/rules
     to: rules
   - from: resources/icon.png

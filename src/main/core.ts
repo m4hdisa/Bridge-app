@@ -4,13 +4,14 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildConfig, buildTestConfig, withServerIp, writeAppRuleSets, type ClashApi } from './config'
+import { buildConfig, buildTestConfig, processPathRegex, withServerIp, writeAppRuleSets, type ClashApi } from './config'
 import { connect } from 'node:net'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
+import { isWarp, parseWarpLine, WARP_IDENTITY_FILE, WARP_READY, warpArgs, warpLabel, warpMethods, warpRegisterArgs } from './warp'
 import { clearSystemProxy, flushDns, freePort, networkInfo, setSystemProxy } from './system'
 import { usesTun } from '../shared/types'
-import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats } from '../shared/types'
+import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats, WarpMethod } from '../shared/types'
 
 export interface CorePaths {
   singBox: string
@@ -21,6 +22,8 @@ export interface CorePaths {
   manageSystemProxy?: boolean
   /** xray.exe, for servers only Xray can run. */
   xray?: string
+  /** aether.exe, for the built-in free WARP server. */
+  aether?: string
 }
 
 function socksOutbound(port: number): ServerProfile['outbound'] {
@@ -39,7 +42,7 @@ function portOpen(port: number): Promise<boolean> {
 }
 
 async function killProcess(child?: ChildProcess): Promise<void> {
-  if (!child || child.exitCode !== null) return
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
   child.removeAllListeners('exit')
   await new Promise<void>((resolve) => {
     child.once('exit', () => resolve())
@@ -55,7 +58,16 @@ interface ClashConnection {
   metadata: { processPath?: string }
 }
 
+/** Thrown when the user disconnects while Bridge is still connecting. */
+class Cancelled extends Error {
+  constructor() {
+    super('Connecting was cancelled')
+  }
+}
+
 const MAX_LOGS = 1000
+/** How long one WARP method may take to find a gateway and prove the tunnel works. */
+const WARP_ATTEMPT_MS = 75_000
 const HEALTH_INTERVAL_MS = 20000
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
@@ -114,6 +126,8 @@ export class Core extends EventEmitter {
 
   private child?: ChildProcess
   private xrayChild?: ChildProcess
+  /** aether.exe processes: several while WARP methods race, one once connected. */
+  private warpChildren = new Set<ChildProcess>()
   private api?: ClashApi
   private proxyPort?: number
   /** SOCKS port that always exits through the VPN (see BuildOptions.probePort); set while running. */
@@ -200,6 +214,108 @@ export class Core extends EventEmitter {
     return { ...server, outbound: socksOutbound(port) }
   }
 
+  /** Counts start() calls, so a slow start that was cancelled can't mistake a newer one for itself. */
+  private startGen = 0
+
+  /** Throws Cancelled when the user disconnected (or connected again) while this start was still running. */
+  private checkCancelled(gen: number): void {
+    if (this.status.state !== 'starting' || gen !== this.startGen) throw new Cancelled()
+  }
+
+  private get warpDir(): string {
+    return join(this.paths.dataDir, 'warp')
+  }
+
+  /** Starts aether.exe, logging its output under `tag`; `onLine` sees each message. */
+  private spawnAether(args: string[], tag: string, onLine?: (text: string) => void): ChildProcess {
+    const child = spawn(this.paths.aether!, args, { windowsHide: true, cwd: this.warpDir })
+    child.stdin?.end()
+    this.warpChildren.add(child)
+    child.once('exit', () => this.warpChildren.delete(child))
+    const feed = (chunk: Buffer) => {
+      for (const l of chunk.toString().split(/\r?\n/)) {
+        if (!l.trim()) continue
+        const { level, text } = parseWarpLine(l)
+        this.log(`[${tag}] ${text}`, level)
+        onLine?.(text)
+      }
+    }
+    child.stdout?.on('data', feed)
+    child.stderr?.on('data', feed)
+    return child
+  }
+
+  /** Starts one WARP attempt; resolves once Aether serves a working tunnel on `port`. */
+  private launchWarp(method: WarpMethod, port: number): Promise<ChildProcess> {
+    return new Promise((resolve, reject) => {
+      let ready = false
+      const child = this.spawnAether(warpArgs(method, port, join(this.warpDir, 'aether.toml')), `warp ${method}`, (text) => {
+        if (ready || !WARP_READY.test(text)) return
+        ready = true
+        clearTimeout(timer)
+        resolve(child)
+      })
+      const timer = setTimeout(() => {
+        child.kill()
+        reject(new Error(`${warpLabel(method)}: no working gateway within ${WARP_ATTEMPT_MS / 1000} s`))
+      }, WARP_ATTEMPT_MS)
+      child.once('exit', (code) => {
+        clearTimeout(timer)
+        if (!ready) reject(new Error(`${warpLabel(method)}: stopped (exit code ${code})`))
+      })
+    })
+  }
+
+  /**
+   * For the free WARP server, starts aether.exe and returns the server as sing-box should see
+   * it: a SOCKS hop into Aether. With method "auto", the MASQUE methods all run at once (each on
+   * its own port) and the first one that carries real traffic wins; the others are stopped.
+   */
+  private async viaWarp(server: ServerProfile, gen: number): Promise<ServerProfile> {
+    const exe = this.paths.aether
+    if (!exe || !existsSync(exe)) throw new Error('WARP core (aether.exe) not found; reinstall Bridge')
+    mkdirSync(this.warpDir, { recursive: true })
+    // One WARP account for every attempt, made once and kept: Cloudflare limits new sign-ups.
+    if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) {
+      this.log('Free WARP: creating a WARP account (first use only)')
+      const child = this.spawnAether(warpRegisterArgs(join(this.warpDir, 'aether.toml')), 'warp')
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => child.kill(), 60_000)
+        child.once('exit', () => {
+          clearTimeout(timer)
+          resolve()
+        })
+      })
+      this.checkCancelled(gen)
+      if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) {
+        throw new Error("Free WARP: could not create a WARP account. Cloudflare's WARP service may be blocked on this network right now (see Logs).")
+      }
+    }
+    const methods = warpMethods(server.warp)
+    this.log(`Free WARP: looking for a way through (${methods.map(warpLabel).join(', ')})`)
+    const attempts = await Promise.all(methods.map(async (method) => ({ method, port: await freePort() })))
+    let winner: { method: WarpMethod; port: number; child: ChildProcess }
+    try {
+      winner = await Promise.any(attempts.map((a) => this.launchWarp(a.method, a.port).then((child) => ({ ...a, child }))))
+    } catch (e) {
+      this.checkCancelled(gen)
+      const reasons = e instanceof AggregateError ? e.errors.map((x) => (x instanceof Error ? x.message : String(x))) : [String(e)]
+      throw new Error(`Free WARP could not connect on this network. ${reasons.join('; ')}`)
+    }
+    // Stop the attempts that lost the race.
+    const losers = [...this.warpChildren].filter((c) => c !== winner.child)
+    for (const c of losers) this.warpChildren.delete(c)
+    await Promise.all(losers.map((c) => killProcess(c)))
+    this.checkCancelled(gen)
+    winner.child.once('exit', (code) => {
+      if (this.status.state !== 'running') return
+      this.log(`WARP core stopped unexpectedly (exit code ${code})`, 'error')
+      void this.stop().then(() => this.setStatus({ state: 'stopped', error: 'WARP core stopped unexpectedly, see Logs' }))
+    })
+    this.log(`Free WARP connected with ${warpLabel(winner.method)} (local SOCKS ${winner.port})`)
+    return { ...server, outbound: socksOutbound(winner.port) }
+  }
+
   log(text: string, level: LogLine['level'] = 'info'): void {
     const line: LogLine = { time: Date.now(), level, text }
     this.logs.push(line)
@@ -212,10 +328,22 @@ export class Core extends EventEmitter {
     this.emit('status', s)
   }
 
+  /** Warned this session that an app got a censored DNS answer (see coreLine). */
+  private censoredDnsWarned = false
+
   private coreLine = (line: string, isErr: boolean) => {
     const level: LogLine['level'] = /\b(ERROR|FATAL)\b/.test(line) ? 'error' : /\bWARN\b/.test(line) ? 'warn' : isErr ? 'warn' : 'info'
     // sing-box prints ANSI colors; strip them for the UI.
-    this.log(line.replace(/\x1b\[[0-9;]*m/g, ''), level)
+    const text = line.replace(/\x1b\[[0-9;]*m/g, '')
+    this.log(text, level)
+    // 10.10.34.x is Iran's block page. Bridge's own DNS never answers with it, so an app
+    // connecting there took the answer from the ISP's DNS (Windows asks every adapter's DNS
+    // server, and without Strict mode the ISP's reply can win). Such an app can't reach the
+    // site even on VPN, because the address itself is wrong.
+    if (!this.censoredDnsWarned && /inbound connection (from \S+ )?to 10\.10\.34\.\d+:/.test(text)) {
+      this.censoredDnsWarned = true
+      this.log('An app got a censored DNS answer from your ISP (10.10.34.x) instead of Bridge, so a blocked site may not open even on VPN. If that happens, turn on Strict mode in Settings.', 'warn')
+    }
   }
 
   async start(server: ServerProfile, settings: Settings, appRules: AppRule[]): Promise<void> {
@@ -223,20 +351,24 @@ export class Core extends EventEmitter {
     if (!existsSync(this.paths.singBox)) throw new Error(`sing-box not found at ${this.paths.singBox}`)
     this.setStatus({ state: 'starting', mode: settings.mode, serverId: server.id })
     this.settings = settings
+    this.censoredDnsWarned = false
+    const gen = ++this.startGen
     try {
       const api: ClashApi = { port: await freePort(), secret: randomUUID() }
       const probePort = await freePort()
       // Direct traffic must resolve with the real network's DNS; read it before TUN takes over.
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
       const usesXray = server.engine === 'xray'
+      const usesWarp = isWarp(server)
       const tun = usesTun(settings.mode)
       const net: Awaited<ReturnType<typeof networkInfo>> = tun ? await networkInfo() : { dnsServers: [], otherTunnels: [], defaultRoutes: [], bindPhysical: false }
       if (net.defaultRoutes.length) this.log(`Default routes before connecting: ${net.defaultRoutes.join(', ')}`)
       const [localDns, pinned] = await Promise.all([
         tun ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
         // In TUN modes Xray goes straight out of the real adapter instead of looping through TUN.
-        usesXray ? this.viaXray(server, tun ? net.interfaceAlias : undefined) : this.pinAddress(server)
+        usesWarp ? this.viaWarp(server, gen) : usesXray ? this.viaXray(server, tun ? net.interfaceAlias : undefined) : this.pinAddress(server)
       ])
+      this.checkCancelled(gen)
       if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? 'DNS-over-HTTPS' : 'DNS'} ${localDns.server}`)
       else if (tun) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
       // With other tunnels up, pin Bridge's own traffic to the real adapter so it never
@@ -255,8 +387,9 @@ export class Core extends EventEmitter {
         cacheFile: join(this.paths.dataDir, 'cache.db'),
         appRulesDir: this.appRulesDir,
         localDns,
-        // Safety net in case xray.exe's traffic still reaches TUN: it must not loop back into the VPN.
-        bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : undefined,
+        // xray.exe's traffic (a safety net; it is bound to the real adapter) and aether.exe's
+        // (which can't be bound on Windows, so it does reach TUN) must not loop back into the VPN.
+        bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : usesWarp && this.paths.aether ? [this.paths.aether] : undefined,
         defaultInterface,
         otherInterface: net.otherInterface,
         probePort
@@ -265,7 +398,14 @@ export class Core extends EventEmitter {
       writeFileSync(configFile, JSON.stringify(config, null, 2))
       this.log(`Starting sing-box: ${server.name} (${settings.mode})`)
 
-      this.child = await launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine)
+      const child = await launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine)
+      // Disconnected while sing-box was starting: stop() couldn't see this process yet.
+      if (this.status.state !== 'starting' || gen !== this.startGen) {
+        await killProcess(child)
+        if (usesTun(settings.mode)) await flushDns()
+        throw new Cancelled()
+      }
+      this.child = child
       this.api = api
       this.probePort = probePort
       this.child.once('exit', (code) => this.onUnexpectedExit(code))
@@ -287,9 +427,18 @@ export class Core extends EventEmitter {
       void this.checkHealth()
       this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS)
     } catch (e) {
+      if (e instanceof Cancelled) {
+        // Disconnected while connecting: stop() already cleaned up and reported it. If a newer
+        // start() is running, everything that is up now belongs to it, so touch nothing.
+        if (gen === this.startGen) {
+          await this.cleanup()
+          this.setStatus({ state: 'stopped' })
+        }
+        return
+      }
+      await this.cleanup()
       const msg = e instanceof Error ? e.message : String(e)
       this.log(msg, 'error')
-      await this.cleanup()
       this.setStatus({ state: 'stopped', error: msg })
       throw e
     }
@@ -336,10 +485,11 @@ export class Core extends EventEmitter {
     const api = this.api
     if (this.status.state !== 'running' || !api || !affectedPaths.length) return
     await new Promise((r) => setTimeout(r, RULE_RELOAD_DELAY_MS))
-    const affected = new Set(affectedPaths.map((p) => p.toLowerCase()))
+    // Same matching as the rules themselves (version folders match any version).
+    const affected = affectedPaths.map((p) => new RegExp(processPathRegex(p).replace('(?i)', ''), 'i'))
     try {
       const snap = await clashGet<{ connections: ClashConnection[] | null }>(api, '/connections')
-      const targets = (snap.connections || []).filter((c) => affected.has((c.metadata.processPath || '').toLowerCase()))
+      const targets = (snap.connections || []).filter((c) => affected.some((re) => re.test(c.metadata.processPath || '')))
       await Promise.all(targets.map((c) => clashDelete(api, `/connections/${encodeURIComponent(c.id)}`)))
       if (targets.length) this.log(`App rules updated, reconnecting ${targets.length} connection(s)`)
     } catch (e) {
@@ -373,6 +523,9 @@ export class Core extends EventEmitter {
     const xrayChild = this.xrayChild
     this.xrayChild = undefined
     await killProcess(xrayChild)
+    const warpChildren = [...this.warpChildren]
+    this.warpChildren.clear()
+    await Promise.all(warpChildren.map((c) => killProcess(c)))
     const child = this.child
     this.child = undefined
     this.api = undefined
@@ -456,6 +609,8 @@ export class Core extends EventEmitter {
    */
   async testLatency(servers: ServerProfile[], testUrl: string): Promise<Map<string, number>> {
     const results = new Map<string, number>()
+    // The free WARP server has no fixed address to ping; finding one is part of connecting.
+    servers = servers.filter((s) => !isWarp(s))
     if (!servers.length) return results
     const configFile = join(this.paths.dataDir, 'latency-test.json')
     const workDir = join(this.paths.dataDir, 'latency-test')

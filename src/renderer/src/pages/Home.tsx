@@ -321,9 +321,11 @@ function ServerPicker({
       </Button>
     )
   }
+  const isWarp = (s: ServerProfile) => s.engine === 'aether'
   const groups = [
+    { label: 'Free', items: servers.filter(isWarp) },
     ...subscriptions.map((s) => ({ label: s.name || 'Subscription', items: servers.filter((x) => x.subscriptionId === s.id) })),
-    { label: 'Manual', items: servers.filter((x) => !x.subscriptionId) }
+    { label: 'Manual', items: servers.filter((x) => !x.subscriptionId && !isWarp(x)) }
   ].filter((g) => g.items.length)
   const picked = servers.find((s) => s.id === selectedId)
 
@@ -355,11 +357,17 @@ function ServerPicker({
               {g.items.map((s) => (
                 <SelectItem key={s.id} value={s.id}>
                   <span className="truncate">{s.name}</span>
-                  <Badge variant="outline" className="uppercase">
-                    {s.protocol}
-                  </Badge>
-                  {s.engine === 'xray' && <Badge variant="warning">Xray</Badge>}
-                  <LatencyPill ms={s.latency} />
+                  {isWarp(s) ? (
+                    <Badge variant="success">Free</Badge>
+                  ) : (
+                    <>
+                      <Badge variant="outline" className="uppercase">
+                        {s.protocol}
+                      </Badge>
+                      {s.engine === 'xray' && <Badge variant="warning">Xray</Badge>}
+                      <LatencyPill ms={s.latency} />
+                    </>
+                  )}
                 </SelectItem>
               ))}
             </SelectGroup>

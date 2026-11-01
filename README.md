@@ -14,6 +14,7 @@ Per-App and Full VPN modes need administrator rights. Bridge offers a "Restart a
 
 - **Protocols:** VLESS (Reality, XTLS Vision, xhttp, VLESS Encryption), VMess, Trojan, Shadowsocks, Hysteria2, TUIC.
 - **Two cores:** [sing-box](https://github.com/SagerNet/sing-box) runs everything it supports, and [Xray-core](https://github.com/XTLS/Xray-core) takes over the configs sing-box can't run (xhttp, VLESS Encryption, HTTP header over TCP). Bridge picks the core automatically, and you can change it per server.
+- **Free WARP server:** no config needed. Bridge connects to Cloudflare WARP through the [Aether](https://github.com/CluvexStudio/Aether) core, trying several methods at once (MASQUE over HTTP/3 or HTTP/2, TLS fragment, IPv6) and keeping the first one that gets through. Exits in Iran are refused.
 - **Four connection modes:**
   - **Per-App**: only the apps you choose use the VPN.
   - **Full VPN**: the whole system goes through the VPN.
@@ -37,7 +38,7 @@ Requires Node.js 22+ on Windows.
 
 ```bash
 npm install
-npm run fetch-core   # downloads sing-box, Xray and the Iran rule-sets into resources/
+npm run fetch-core   # downloads sing-box, Xray, Aether and the Iran rule-sets into resources/
 npm run dev          # run the app
 npm run dist         # build the installer into dist/
 ```
@@ -57,6 +58,7 @@ The installer bundles these programs. They are downloaded at build time and are 
 
 - [sing-box](https://github.com/SagerNet/sing-box), GPL-3.0-or-later. Source: https://github.com/SagerNet/sing-box
 - [Xray-core](https://github.com/XTLS/Xray-core), MPL-2.0. Source: https://github.com/XTLS/Xray-core
+- [Aether](https://github.com/CluvexStudio/Aether) by CluvexStudio ([Telegram](https://t.me/CluvexStudio)), AGPL-3.0, for the free WARP server. Bridge runs the official `aether.exe` unmodified, as a separate program. Source: https://github.com/CluvexStudio/Aether
 - [Iran sing-box rule-sets](https://github.com/Chocolate4U/Iran-sing-box-rules) by Chocolate4U.
 
 The app is built with [Electron](https://www.electronjs.org/), React, Tailwind CSS and [shadcn/ui](https://ui.shadcn.com/).

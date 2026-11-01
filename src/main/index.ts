@@ -8,8 +8,9 @@ import { Store } from './store'
 import { fetchSubscription } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
 import { checkForUpdate, downloadInstaller, runInstaller } from './updater'
+import { isWarp, newWarpServer } from './warp'
 import { AUTO_SERVER, usesTun } from '../shared/types'
-import type { AppRule, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, UpdateStatus } from '../shared/types'
+import type { AppRule, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, UpdateStatus, WarpOptions } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
 
@@ -19,6 +20,7 @@ const store = new Store(join(dataDir, 'state.json'))
 const core = new Core({
   singBox: join(resourcesDir, 'core', 'sing-box.exe'),
   xray: join(resourcesDir, 'xray', 'xray.exe'),
+  aether: join(resourcesDir, 'aether', 'aether.exe'),
   rulesDir: join(resourcesDir, 'rules'),
   dataDir: join(dataDir, 'core')
 })
@@ -365,12 +367,30 @@ handle('selectServer', async (id: string) => {
 handle('setServerEngine', async (id: string, engine: Engine) => {
   const server = store.state.servers.find((s) => s.id === id)
   if (!server) throw new Error('Server not found')
+  if (isWarp(server) || engine === 'aether') throw new Error('Only the free WARP server runs on the WARP core')
   if (engine === 'xray' && !server.xray) throw new Error('Xray cannot run this server')
   if (engine === 'sing-box' && server.xrayOnly) throw new Error('sing-box cannot run this server')
   store.update(() => {
     server.engine = engine
     server.latency = undefined
   })
+  pushState()
+  if (store.state.selectedServerId === id) await reconnectIfRunning()
+})
+handle('addWarpServer', async () => {
+  let server = store.state.servers.find(isWarp)
+  store.update((s) => {
+    if (!server) s.servers.unshift((server = newWarpServer()))
+    s.selectedServerId = server.id
+    s.settings.autoServer = false
+  })
+  pushState()
+  await reconnectIfRunning()
+})
+handle('setWarpMethod', async (id: string, method: WarpOptions['method']) => {
+  const server = store.state.servers.find((s) => s.id === id)
+  if (!server || !isWarp(server)) throw new Error('Not the WARP server')
+  store.update(() => (server.warp = { method }))
   pushState()
   if (store.state.selectedServerId === id) await reconnectIfRunning()
 })

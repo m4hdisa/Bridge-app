@@ -3,6 +3,7 @@ out/
 dist/
 resources/core/
 resources/xray/
+resources/aether/
 resources/rules/
 *.log
 *.tsbuildinfo

@@ -63,9 +63,19 @@ export function withServerIp<T extends Record<string, unknown>>(outbound: T, ip:
   return o as T
 }
 
-/** Case-insensitive exact match on a Windows exe path. */
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * Case-insensitive match on a Windows exe path. Version numbers in folder names match any
+ * version, so a rule keeps working after the app updates itself into a new folder: Discord /
+ * Slack ("app-1.0.9187"), Microsoft Store apps ("WhatsAppDesktop_2.2442.6.0_x64__..."), and
+ * plain version folders ("\120.0.6099.110\"). The exe name itself must still match exactly.
+ */
 export function processPathRegex(path: string): string {
-  return '(?i)^' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'
+  const parts = path.split('\\')
+  const exe = escapeRegex(parts.pop() || '')
+  const dirs = parts.map((dir) => dir.split(/\d+(?:\.\d+)+/).map(escapeRegex).join('[0-9.]+'))
+  return '(?i)^' + [...dirs, exe].join('\\\\') + '$'
 }
 
 function appRule(rules: AppRule[], action: AppAction): string[] {
@@ -163,6 +173,9 @@ export function buildConfig(o: BuildOptions): Json {
   }
   if (settings.mode === 'per-app') {
     routeRules.push({ rule_set: ['apps-proxy'], outbound: 'proxy' })
+    // Apps pointed at Bridge's local proxy on purpose (e.g. Telegram's proxy setting) want
+    // the VPN even when they aren't in the app list. Apps set to Direct / Block still win.
+    routeRules.push({ inbound: ['mixed-in'], outbound: 'proxy' })
   }
 
   const ruleSets: Json[] = APP_ACTIONS.map((action) => ({

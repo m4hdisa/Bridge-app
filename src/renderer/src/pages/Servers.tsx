@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
-import { Check, ChevronRight, ClipboardPaste, Copy, Ellipsis, FileText, Link2, Plus, RefreshCw, Repeat, Server as ServerIcon, Trash2, TriangleAlert, Zap } from 'lucide-react'
-import type { ImportResult, ServerProfile, Subscription } from '../../../shared/types'
+import { Check, ChevronRight, ClipboardPaste, Cloud, Copy, Ellipsis, FileText, Link2, Plus, RefreshCw, Repeat, Server as ServerIcon, Trash2, TriangleAlert, Zap } from 'lucide-react'
+import { WARP_METHODS, type ImportResult, type ServerProfile, type Subscription, type WarpOptions } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { ago, bytes } from '../format'
 import { cn } from '@/lib/utils'
@@ -14,6 +14,7 @@ import { Input, Textarea } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription, Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/misc'
 import { Progress } from '@/components/ui/progress'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 const DAY = 86400_000
@@ -32,8 +33,10 @@ export function Servers({ state, run }: PageProps) {
     await run(() => api.testLatency(ids))
     setTesting(undefined)
   }
-  const manual = state.servers.filter((s) => !s.subscriptionId)
+  const warp = state.servers.find((s) => s.engine === 'aether')
+  const manual = state.servers.filter((s) => !s.subscriptionId && s !== warp)
   const empty = !state.servers.length && !state.subscriptions.length
+  const addWarp = () => run(() => api.addWarpServer(), () => 'Free WARP server selected')
 
   return (
     <>
@@ -46,6 +49,12 @@ export function Servers({ state, run }: PageProps) {
         }
         actions={
           <>
+            {!warp && (
+              <Button variant="outline" onClick={addWarp}>
+                <Cloud />
+                Free WARP
+              </Button>
+            )}
             <Button variant="outline" disabled={!!testing || !state.servers.length} onClick={() => test('all')}>
               <Zap className={cn(testing === 'all' && 'animate-pulse')} />
               {testing === 'all' ? 'Testing…' : 'Test all'}
@@ -82,9 +91,13 @@ export function Servers({ state, run }: PageProps) {
             <EmptyState
               icon={ServerIcon}
               title="No servers yet"
-              description="Add your subscription link, or copy a vless:// / vmess:// / trojan:// / ss:// / hysteria2:// link and import it from the clipboard."
+              description="Add your subscription link, or copy a vless:// / vmess:// / trojan:// / ss:// / hysteria2:// link and import it from the clipboard. No server yet? Use the free Cloudflare WARP server."
               action={
-                <div className="flex gap-2">
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Button variant="outline" onClick={addWarp}>
+                    <Cloud />
+                    Use free WARP
+                  </Button>
                   <Button variant="outline" onClick={() => run(() => api.importClipboard(), importMessage)}>
                     <ClipboardPaste />
                     Import from clipboard
@@ -98,6 +111,8 @@ export function Servers({ state, run }: PageProps) {
             />
           </Card>
         )}
+
+        {warp && <WarpCard server={warp} selected={warp.id === state.selectedServerId && !state.settings.autoServer} run={run} />}
 
         {state.subscriptions.map((sub) => (
           <SubscriptionCard
@@ -289,6 +304,69 @@ function Tile({ label, children }: { label: string; children: ReactNode }) {
       <div className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">{label}</div>
       {children}
     </div>
+  )
+}
+
+function WarpCard({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
+  const method = s.warp?.method ?? 'auto'
+  const hint = method === 'auto' ? 'Tries every way at once and keeps the first one that works.' : WARP_METHODS.find((m) => m.id === method)?.hint
+  return (
+    <Card className={cn(selected && 'border-primary/50')}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Cloud className="text-primary size-4" />
+          Free WARP
+          <Badge variant="success">Free</Badge>
+        </CardTitle>
+        <CardDescription>
+          Cloudflare WARP, no config or subscription needed. Bridge finds a way through your network each time you connect, which can take up to a minute. Sites see a Cloudflare address, and some of them ask for a captcha.
+        </CardDescription>
+        <CardAction className="flex items-center gap-1">
+          {selected ? (
+            <Badge variant="primary">
+              <Check />
+              In use
+            </Badge>
+          ) : (
+            <Button size="sm" onClick={() => run(() => api.selectServer(s.id))}>
+              Use
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm">
+                <Ellipsis />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem variant="destructive" onClick={() => run(() => api.removeServer(s.id), () => 'Free WARP removed')}>
+                <Trash2 />
+                Remove
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-3">
+          <Label className="text-sm">Connection method</Label>
+          <Select value={method} onValueChange={(v) => run(() => api.setWarpMethod(s.id, v as WarpOptions['method']))}>
+            <SelectTrigger className="w-60">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">Auto (recommended)</SelectItem>
+              {WARP_METHODS.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <p className="text-muted-foreground text-xs">{hint}</p>
+      </CardContent>
+    </Card>
   )
 }
 

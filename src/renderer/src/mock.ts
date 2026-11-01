@@ -83,6 +83,21 @@ export function createMockBridge(): BridgeApi {
       if (s) s.engine = engine
       emitState()
     },
+    addWarpServer: async () => {
+      let warp = state.servers.find((s) => s.engine === 'aether')
+      if (!warp) {
+        warp = { id: 'warp', name: 'Free WARP (Cloudflare)', protocol: 'warp', server: 'Cloudflare WARP', port: 0, link: 'warp://free', outbound: { type: 'warp' }, engine: 'aether', warp: { method: 'auto' } }
+        state.servers.unshift(warp)
+      }
+      state.selectedServerId = warp.id
+      state.settings.autoServer = false
+      emitState()
+    },
+    setWarpMethod: async (id, method) => {
+      const s = state.servers.find((x) => x.id === id)
+      if (s) s.warp = { method }
+      emitState()
+    },
     selectServer: async (id) => {
       state.settings.autoServer = id === 'auto'
       if (id === 'auto') {

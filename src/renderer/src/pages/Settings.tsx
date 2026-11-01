@@ -126,6 +126,12 @@ export function SettingsPage({ state, update, run }: PageProps) {
                 </Button>
               )}
             </Row>
+            <Row
+              title="Cores"
+              description="sing-box (GPL-3.0) and Xray-core (MPL-2.0) run your servers. Free WARP runs on Aether by CluvexStudio (AGPL-3.0, unmodified; source github.com/CluvexStudio/Aether, channel t.me/CluvexStudio)."
+            >
+              {null}
+            </Row>
           </CardContent>
         </Card>
       </div>
