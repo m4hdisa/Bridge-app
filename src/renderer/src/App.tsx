@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import type { AppState, CoreStatus, LogLine, TrafficStats, UpdateStatus } from '../../shared/types'
 import { errorMessage, speed } from './format'
 import { cn } from '@/lib/utils'
-import { Flag, StatusDot, type Tone } from '@/components/common'
+import { CloudflareMark, Flag, StatusDot, type Tone } from '@/components/common'
 import { Toaster } from '@/components/ui/misc'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -133,7 +133,7 @@ export function App() {
                 {summary.label}
               </div>
               <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
-                {status.state === 'running' && status.exit && <Flag code={status.exit.countryCode} className="h-3 w-4" />}
+                {status.state === 'running' && status.exit && (server?.engine === 'aether' ? <CloudflareMark className="h-3 w-4" /> : <Flag code={status.exit.countryCode} className="h-3 w-4" />)}
                 <span className="truncate">{status.state === 'running' && status.exit ? `${status.exit.country} · ${server?.name ?? ''}` : server ? server.name : 'No server selected'}</span>
               </div>
               {status.state === 'running' && (

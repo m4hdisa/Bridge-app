@@ -6,14 +6,14 @@
 // Usage: tsx scripts/warptest.ts [--offline]
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { createSocket } from 'node:dgram'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Core } from '../src/main/core'
 import { parseLink } from '../src/main/parser'
 import { DEFAULT_SETTINGS } from '../src/main/store'
-import { newWarpServer, parseWarpLine, WARP_IDENTITY_FILE, WARP_REGISTER_TRIES, warpArgs, warpExitCountry, warpMethods, warpReady } from '../src/main/warp'
+import { GOOL_RETRY_MS, isWarpConfig, newWarpConfig, newWarpServer, parseWarpLine, WARP_IDENTITY_FILE, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpMethods, warpReady } from '../src/main/warp'
 
 const root = join(__dirname, '..')
 let failed = 0
@@ -36,6 +36,15 @@ function offline() {
   const line = parseWarpLine('[2026-11-01T13:44:28.292Z INFO  aether::socks] [+] socks5 server listening on 127.0.0.1:21819')
   check(line.level === 'info' && line.text.startsWith('[+] socks5') && warpReady(line.text, 21819), 'ready line parsed')
   check(parseWarpLine('[2026-11-01T13:44:28.292Z WARN  aether] [-] gateway lost').level === 'warn', 'warn level parsed')
+  const now = Date.now()
+  check(waitForGool({}, now), 'Auto waits for Gool when it has no history')
+  check(!waitForGool({ goolMissedAt: now - 60_000 }, now), "Auto doesn't wait for Gool right after a miss")
+  check(warpGateway('[+] using cloudflare edge 162.159.198.131:443') === '162.159.198.131:443', 'gateway read from the log')
+  const peerArgs = warpArgs('gool', 1234, 'C:\\data\\aether.toml', '162.159.198.131:443').join(' ')
+  check(peerArgs.includes('--peer 162.159.198.131:443'), `a saved config names its gateway: ${peerArgs}`)
+  const cfg = newWarpConfig({ method: 'h2', peer: '162.159.198.183:443', exit: 'IR', readyMs: 6800 })
+  check(isWarpConfig(cfg) && !isWarpConfig(newWarpServer()) && warpMethods(cfg.warp).join() === 'h2', `saved config: ${cfg.name}`)
+  check(waitForGool({ goolMissedAt: now - GOOL_RETRY_MS }, now), `Auto waits for Gool again after ${GOOL_RETRY_MS / 3_600_000} h`)
 }
 
 function curlTrace(port: number): Promise<string> {
@@ -129,6 +138,57 @@ async function live() {
   await core.start(warp, settings, [])
   check(core.status.state === 'running', 'running again')
   check(!core.logs.slice(mark).some((l) => /creating a WARP account/.test(l.text)), 'no new WARP account was made')
+  const stateFile = join(dataDir, 'warp', WARP_STATE_FILE)
+  check(!JSON.parse(readFileSync(stateFile, 'utf8')).goolMissedAt, 'Gool connected, so no miss is remembered')
+  await core.stop()
+
+  console.log('Reconnect right after Gool missed')
+  writeFileSync(stateFile, JSON.stringify({ goolMissedAt: Date.now() }))
+  const mark2 = core.logs.length
+  const t1 = Date.now()
+  await core.start(warp, settings, [])
+  check(core.status.state === 'running', `running after ${((Date.now() - t1) / 1000).toFixed(1)} s`)
+  check(core.logs.slice(mark2).some((l) => /Gool didn't get through recently/.test(l.text)), 'Auto took the first way that works, without waiting')
+  check(!core.logs.slice(mark2).some((l) => /waiting up to/.test(l.text)), 'no 30 s wait for Gool')
+
+  console.log('Find configs')
+  let refused = ''
+  await core.findWarpConfigs().catch((e) => (refused = String(e)))
+  check(/Disconnect first/.test(refused), 'refused while connected')
+  await core.stop()
+  const t2 = Date.now()
+  const found = await core.findWarpConfigs()
+  check(found.length > 0, `${found.length} found in ${((Date.now() - t2) / 1000).toFixed(1)} s: ${found.map((f) => `${f.method}@${f.peer} ${f.exit ?? '?'}`).join(', ')}`)
+  check(
+    found.every((f) => (f.method === 'h2-ipv6' ? /^\[[0-9a-f:]+\]:\d+$/i : /^\d+\.\d+\.\d+\.\d+:\d+$/).test(f.peer)),
+    'each config has a gateway of its own kind (IPv6 for the IPv6 method)'
+  )
+  check(found.every((f) => !!f.exit), 'each config knows its exit country')
+  check(aetherProcesses() === before, 'no aether.exe left after finding configs')
+
+  console.log('Connect with a saved config')
+  const best = found.find((f) => f.method === 'gool') ?? found[0]
+  if (best) {
+    const config = newWarpConfig(best)
+    const mark3 = core.logs.length
+    const t3 = Date.now()
+    await core.start(config, settings, [])
+    check(core.status.state === 'running', `running after ${((Date.now() - t3) / 1000).toFixed(1)} s`)
+    check(core.logs.slice(mark3).some((l) => l.text.includes(`saved gateway ${best.peer}`)), 'used the saved gateway, no scan')
+    check(!core.logs.slice(mark3).some((l) => /scan mode=/.test(l.text)), 'Aether did not scan')
+    check(/warp=(on|plus)/.test(await curlTrace(port)), 'HTTPS through WARP')
+    await core.stop()
+  }
+
+  console.log('A saved gateway that stopped answering')
+  const dead = newWarpConfig({ method: 'h2', peer: '192.0.2.1:443', readyMs: 0 })
+  let moved: string | undefined
+  core.onWarpPeer = (_id, peer) => (moved = peer)
+  const mark4 = core.logs.length
+  await core.start(dead, settings, [])
+  check(core.status.state === 'running', 'still connects (scanned for another gateway)')
+  check(core.logs.slice(mark4).some((l) => /saved gateway didn't answer/.test(l.text)), 'logged the dead gateway')
+  check(!!moved && moved !== '192.0.2.1:443', `the config was updated to ${moved}`)
   await core.stop()
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }

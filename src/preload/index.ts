@@ -22,6 +22,7 @@ const api: BridgeApi = {
   setServerEngine: invoke('setServerEngine'),
   addWarpServer: invoke('addWarpServer'),
   setWarpMethod: invoke('setWarpMethod'),
+  findWarpConfigs: invoke('findWarpConfigs'),
   testLatency: invoke('testLatency'),
   addSubscription: invoke('addSubscription'),
   updateSubscription: invoke('updateSubscription'),

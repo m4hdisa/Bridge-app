@@ -43,6 +43,23 @@ export interface WarpOptions {
    * an exit that Cloudflare registers in Iran; one of them is used if Gool doesn't get through.
    */
   method: WarpMethod | 'auto'
+  /**
+   * Set on configs found by "Find configs": the Cloudflare gateway ("ip:port") this method got
+   * through on, so connecting skips the scan. Bridge scans again if it stops answering.
+   */
+  peer?: string
+  /** Exit country Aether reported when the config was found, e.g. "DE". */
+  exit?: string
+  /** How long the tunnel took to come up when the config was found. */
+  readyMs?: number
+}
+
+/** One way through to WARP that "Find configs" proved on this network. */
+export interface WarpFound {
+  method: WarpMethod
+  peer: string
+  exit?: string
+  readyMs: number
 }
 
 export const WARP_METHODS: { id: WarpMethod; label: string; hint: string; auto: boolean }[] = [
@@ -261,6 +278,8 @@ export interface BridgeApi {
   /** Adds the built-in free WARP server (or returns the existing one) and selects it. */
   addWarpServer(): Promise<void>
   setWarpMethod(id: string, method: WarpOptions['method']): Promise<void>
+  /** Tries every WARP method on this network (while disconnected) and saves the ones that work as configs. Returns how many. */
+  findWarpConfigs(): Promise<number>
   testLatency(ids?: string[]): Promise<void>
 
   addSubscription(name: string, url: string): Promise<ImportResult>

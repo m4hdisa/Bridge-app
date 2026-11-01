@@ -4,7 +4,7 @@ import { WARP_METHODS, type ImportResult, type ServerProfile, type Subscription,
 import { api, type PageProps } from '../App'
 import { ago, bytes } from '../format'
 import { cn } from '@/lib/utils'
-import { EmptyState, LatencyPill, PageHeader } from '@/components/common'
+import { CloudflareMark, EmptyState, Flag, LatencyPill, PageHeader } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -23,7 +23,7 @@ function importMessage(r: ImportResult): string {
   return r.errors.length ? `${r.added} added · ${r.errors.length} not supported` : `${r.added} server${r.added === 1 ? '' : 's'} added`
 }
 
-export function Servers({ state, run }: PageProps) {
+export function Servers({ state, status, run }: PageProps) {
   const [testing, setTesting] = useState<string>()
   const [pasteOpen, setPasteOpen] = useState(false)
   const [subOpen, setSubOpen] = useState(false)
@@ -33,8 +33,9 @@ export function Servers({ state, run }: PageProps) {
     await run(() => api.testLatency(ids))
     setTesting(undefined)
   }
-  const warp = state.servers.find((s) => s.engine === 'aether')
-  const manual = state.servers.filter((s) => !s.subscriptionId && s !== warp)
+  const warp = state.servers.find((s) => s.engine === 'aether' && !s.warp?.peer)
+  const warpConfigs = state.servers.filter((s) => s.engine === 'aether' && !!s.warp?.peer)
+  const manual = state.servers.filter((s) => !s.subscriptionId && s.engine !== 'aether')
   const empty = !state.servers.length && !state.subscriptions.length
   const addWarp = () => run(() => api.addWarpServer(), () => 'Free WARP server selected')
 
@@ -112,7 +113,15 @@ export function Servers({ state, run }: PageProps) {
           </Card>
         )}
 
-        {warp && <WarpCard server={warp} selected={warp.id === state.selectedServerId && !state.settings.autoServer} run={run} />}
+        {warp && (
+          <WarpCard
+            server={warp}
+            configs={warpConfigs}
+            selectedId={state.settings.autoServer ? undefined : state.selectedServerId}
+            connected={status.state !== 'stopped'}
+            run={run}
+          />
+        )}
 
         {state.subscriptions.map((sub) => (
           <SubscriptionCard
@@ -307,19 +316,41 @@ function Tile({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function WarpCard({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
+function WarpCard({
+  server: s,
+  configs,
+  selectedId,
+  connected,
+  run
+}: {
+  server: ServerProfile
+  configs: ServerProfile[]
+  selectedId?: string
+  connected: boolean
+  run: PageProps['run']
+}) {
+  const [finding, setFinding] = useState(false)
+  const selected = s.id === selectedId
+  const find = async () => {
+    setFinding(true)
+    await run(
+      () => api.findWarpConfigs(),
+      (n) => (n ? `${n} config${n === 1 ? '' : 's'} found` : 'No way through found on this network right now')
+    )
+    setFinding(false)
+  }
   const method = s.warp?.method ?? 'auto'
-  const hint = method === 'auto' ? 'Tries every way at once. Prefers Gool, whose exit is outside Iran; otherwise keeps the first one that works.' : WARP_METHODS.find((m) => m.id === method)?.hint
+  const hint = method === 'auto' ? 'Tries every way at once. Prefers Gool, whose exit is outside Iran; otherwise keeps the first one that works. If Gool misses, the next connects for a few hours don\'t wait for it.' : WARP_METHODS.find((m) => m.id === method)?.hint
   return (
     <Card className={cn(selected && 'border-primary/50')}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Cloud className="text-primary size-4" />
+          <CloudflareMark />
           Free WARP
           <Badge variant="success">Free</Badge>
         </CardTitle>
         <CardDescription>
-          Cloudflare WARP, no config or subscription needed. Bridge finds a way through your network each time you connect, which can take up to a minute. Sites see a Cloudflare address, and some of them ask for a captcha.
+          Cloudflare WARP, no config or subscription needed. Bridge finds a way through your network each time you connect, which can take up to a minute; a saved config below connects in seconds. Sites see a Cloudflare address, and some of them ask for a captcha.
         </CardDescription>
         <CardAction className="flex items-center gap-1">
           {selected ? (
@@ -365,8 +396,82 @@ function WarpCard({ server: s, selected, run }: { server: ServerProfile; selecte
           </Select>
         </div>
         <p className="text-muted-foreground text-xs">{hint}</p>
+
+        <div className="mt-3 flex flex-col gap-2 border-t pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Saved configs</div>
+              <p className="text-muted-foreground text-xs">
+                {connected
+                  ? 'Disconnect to find configs: Bridge tests every way on your own network.'
+                  : 'Tests every way through your network once and saves each one that works, with its gateway. Connecting to a saved config skips the search, so it takes seconds.'}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" disabled={finding || connected} onClick={find}>
+              <RefreshCw className={cn(finding && 'animate-spin')} />
+              {finding ? 'Finding… (up to 1.5 min)' : configs.length ? 'Find again' : 'Find configs'}
+            </Button>
+          </div>
+          {configs.length > 0 && (
+            <div className="flex flex-col gap-1">
+              {configs.map((c) => (
+                <WarpConfigRow key={c.id} server={c} selected={c.id === selectedId} run={run} />
+              ))}
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
+  )
+}
+
+function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
+  const w = s.warp!
+  const label = WARP_METHODS.find((m) => m.id === w.method)?.label ?? w.method
+  const pick = () => !selected && run(() => api.selectServer(s.id))
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={pick}
+      onKeyDown={(e) => e.key === 'Enter' && pick()}
+      className={cn(
+        'group flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+        selected ? 'border-primary/50 bg-primary/8' : 'hover:bg-muted/40 border-transparent'
+      )}
+    >
+      <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-full border-2', selected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40')}>
+        {selected && <Check className="size-3" strokeWidth={3.5} />}
+      </span>
+      <CloudflareMark />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm font-medium">{label}</span>
+        <span className="text-muted-foreground truncate font-mono text-xs">{w.peer}</span>
+      </div>
+      {w.exit && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+              <Flag code={w.exit} className="h-3 w-4" />
+              {w.exit}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{w.exit === 'IR' ? 'Cloudflare registers this exit in Iran: filtering is bypassed, but some sites block Iranian users' : 'Exit country Cloudflare gave this config'}</TooltipContent>
+        </Tooltip>
+      )}
+      {w.readyMs !== undefined && <span className="text-muted-foreground tabular w-12 text-right text-xs">{(w.readyMs / 1000).toFixed(1)} s</span>}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        onClick={(e) => {
+          e.stopPropagation()
+          run(() => api.removeServer(s.id))
+        }}
+      >
+        <Trash2 />
+      </Button>
+    </div>
   )
 }
 

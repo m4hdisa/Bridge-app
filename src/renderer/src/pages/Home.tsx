@@ -4,7 +4,7 @@ import { AUTO_SERVER, usesTun, type AppRule, type ConnectionMode, type CoreStatu
 import { api, connectionSummary, type PageProps } from '../App'
 import { ago, bytes, duration, speed } from '../format'
 import { cn } from '@/lib/utils'
-import { AppIcon, EmptyState, Flag, LatencyPill, RouteBadge, StatusDot } from '@/components/common'
+import { AppIcon, CloudflareMark, EmptyState, Flag, LatencyPill, RouteBadge, StatusDot } from '@/components/common'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/misc'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -33,6 +33,7 @@ export function Home({ state, status, stats, run, go }: PageProps) {
   const busy = status.state === 'starting' || status.state === 'stopping'
   const mode = MODES.find((m) => m.id === state.settings.mode)!
   const server = state.servers.find((s) => s.id === state.selectedServerId)
+  const viaWarp = state.servers.find((s) => s.id === (status.serverId ?? state.selectedServerId))?.engine === 'aether'
   const needsAdmin = usesTun(state.settings.mode) && !admin
   const proxyAddress = `127.0.0.1:${status.proxyPort ?? state.settings.mixedPort}`
   const summary = connectionSummary(status)
@@ -83,8 +84,18 @@ export function Home({ state, status, stats, run, go }: PageProps) {
                     <div className="bg-card/70 flex w-fit max-w-full items-center gap-2.5 rounded-full border py-1.5 pr-4 pl-2.5 text-sm whitespace-nowrap">
                       {status.exit ? (
                         <>
-                          <Flag code={status.exit.countryCode} className="h-4 w-6 shrink-0" />
-                          <span className="font-medium">{status.exit.country}</span>
+                          {viaWarp ? (
+                            <>
+                              <CloudflareMark className="h-4 w-6" />
+                              <span className="font-medium">Cloudflare</span>
+                              <span className="text-muted-foreground">{status.exit.country}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Flag code={status.exit.countryCode} className="h-4 w-6 shrink-0" />
+                              <span className="font-medium">{status.exit.country}</span>
+                            </>
+                          )}
                           {status.exit.city && <span className="text-muted-foreground min-w-0 truncate">{status.exit.city}</span>}
                           <span className="text-muted-foreground font-mono text-xs">{status.exit.ip}</span>
                         </>
@@ -356,18 +367,21 @@ function ServerPicker({
               <SelectLabel>{g.label}</SelectLabel>
               {g.items.map((s) => (
                 <SelectItem key={s.id} value={s.id}>
-                  <span className="truncate">{s.name}</span>
-                  {isWarp(s) ? (
-                    <Badge variant="success">Free</Badge>
-                  ) : (
-                    <>
-                      <Badge variant="outline" className="uppercase">
-                        {s.protocol}
-                      </Badge>
-                      {s.engine === 'xray' && <Badge variant="warning">Xray</Badge>}
-                      <LatencyPill ms={s.latency} />
-                    </>
-                  )}
+                  <span className="flex min-w-0 items-center gap-2">
+                    {isWarp(s) && <CloudflareMark className="h-3 w-4" />}
+                    <span className="truncate">{s.name}</span>
+                    {isWarp(s) ? (
+                      <Badge variant="success">Free</Badge>
+                    ) : (
+                      <>
+                        <Badge variant="outline" className="uppercase">
+                          {s.protocol}
+                        </Badge>
+                        {s.engine === 'xray' && <Badge variant="warning">Xray</Badge>}
+                        <LatencyPill ms={s.latency} />
+                      </>
+                    )}
+                  </span>
                 </SelectItem>
               ))}
             </SelectGroup>

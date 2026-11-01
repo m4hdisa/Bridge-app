@@ -8,7 +8,7 @@ import { Store } from './store'
 import { fetchSubscription } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
 import { checkForUpdate, downloadInstaller, runInstaller } from './updater'
-import { isWarp, newWarpServer } from './warp'
+import { isWarp, isWarpConfig, newWarpConfig, newWarpServer } from './warp'
 import { AUTO_SERVER, usesTun } from '../shared/types'
 import type { AppRule, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, UpdateStatus, WarpOptions } from '../shared/types'
 
@@ -250,6 +250,13 @@ function watchHealth(s: CoreStatus): void {
 // When Cloudflare's WARP service is blocked, Free WARP creates its account through one of the
 // user's own servers: the one with the best ping, or else the first one.
 core.warpHelper = () => bestServer() ?? store.state.servers.find((s) => !isWarp(s))
+// A saved WARP config's gateway stopped answering and the scan found another: keep the new one.
+core.onWarpPeer = (id, peer) => {
+  const server = store.state.servers.find((s) => s.id === id)
+  if (!server?.warp) return
+  store.update(() => (server.warp = { ...server.warp!, peer }))
+  pushState()
+}
 
 // ---------- updates ----------
 
@@ -382,7 +389,7 @@ handle('setServerEngine', async (id: string, engine: Engine) => {
   if (store.state.selectedServerId === id) await reconnectIfRunning()
 })
 handle('addWarpServer', async () => {
-  let server = store.state.servers.find(isWarp)
+  let server = store.state.servers.find((s) => isWarp(s) && !isWarpConfig(s))
   store.update((s) => {
     if (!server) s.servers.unshift((server = newWarpServer()))
     s.selectedServerId = server.id
@@ -390,6 +397,23 @@ handle('addWarpServer', async () => {
   })
   pushState()
   await reconnectIfRunning()
+})
+handle('findWarpConfigs', async () => {
+  const found = await core.findWarpConfigs()
+  // Gool first (its exit is outside Iran), then the fastest.
+  found.sort((a, b) => Number(b.method === 'gool') - Number(a.method === 'gool') || a.readyMs - b.readyMs)
+  store.update((s) => {
+    const old = new Set(s.servers.filter(isWarpConfig).map((x) => x.id))
+    const configs = found.map(newWarpConfig)
+    let at = s.servers.findIndex((x) => isWarp(x) && !isWarpConfig(x))
+    if (at < 0) s.servers.unshift(newWarpServer()), (at = 0)
+    s.servers = s.servers.filter((x) => !old.has(x.id))
+    s.servers.splice(at + 1, 0, ...configs)
+    // The selected config was replaced: pick the best new one, or plain Free WARP.
+    if (s.selectedServerId && old.has(s.selectedServerId)) s.selectedServerId = (configs[0] ?? s.servers[at]).id
+  })
+  pushState()
+  return found.length
 })
 handle('setWarpMethod', async (id: string, method: WarpOptions['method']) => {
   const server = store.state.servers.find((s) => s.id === id)

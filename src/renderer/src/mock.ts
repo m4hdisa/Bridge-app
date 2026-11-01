@@ -98,6 +98,20 @@ export function createMockBridge(): BridgeApi {
       if (s) s.warp = { method }
       emitState()
     },
+    findWarpConfigs: async () => {
+      await new Promise((r) => setTimeout(r, 2500))
+      const base = { protocol: 'warp' as const, port: 443, outbound: { type: 'warp' as const }, engine: 'aether' as const }
+      state.servers = state.servers.filter((s) => !s.warp?.peer)
+      const at = state.servers.findIndex((s) => s.engine === 'aether') + 1
+      state.servers.splice(
+        at,
+        0,
+        { ...base, id: 'warp-gool', name: 'Free WARP · Gool (WARP in WARP) · DE', server: '162.159.198.131', link: 'warp://gool@162.159.198.131:443', warp: { method: 'gool', peer: '162.159.198.131:443', exit: 'DE', readyMs: 9400 } },
+        { ...base, id: 'warp-h2', name: 'Free WARP · MASQUE over HTTP/2 · IR', server: '162.159.198.183', link: 'warp://h2@162.159.198.183:443', warp: { method: 'h2', peer: '162.159.198.183:443', exit: 'IR', readyMs: 6800 } }
+      )
+      emitState()
+      return 2
+    },
     selectServer: async (id) => {
       state.settings.autoServer = id === 'auto'
       if (id === 'auto') {

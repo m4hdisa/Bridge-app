@@ -58,6 +58,20 @@ export function Flag({ code, className }: { code?: string; className?: string })
   return <Svg title={code} className={cn('h-3.5 w-5 shrink-0 rounded-[3px] shadow-[0_0_0_1px] shadow-white/10', className)} />
 }
 
+/** Shown instead of a country flag when the VPN is Cloudflare WARP: the exit is Cloudflare's network. */
+export function CloudflareMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 16" className={cn('h-3.5 w-5 shrink-0', className)} role="img" aria-label="Cloudflare">
+      <title>Cloudflare</title>
+      <path
+        fill="#F38020"
+        d="M19.2 6.6A7.2 7.2 0 0 0 5.4 4.9 5.6 5.6 0 0 0 5.6 16h13.2a4.7 4.7 0 0 0 .4-9.4Z"
+      />
+      <path fill="#FBAD41" d="M19.2 6.6c-.3 0-.6 0-.9.1a5 5 0 0 1-4.4 9.3h4.9a4.7 4.7 0 0 0 .4-9.4Z" />
+    </svg>
+  )
+}
+
 export function AppIcon({ src, className }: { src?: string; className?: string }) {
   return src ? (
     <img src={src} alt="" className={cn('size-7 shrink-0 rounded-md', className)} />

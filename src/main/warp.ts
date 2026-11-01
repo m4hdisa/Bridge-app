@@ -4,7 +4,7 @@
 // "proxy" outbound then becomes a SOCKS hop into it, like with Xray:
 //   app -> TUN -> sing-box (rules) -> socks 127.0.0.1 -> aether.exe -> Cloudflare WARP
 import { randomUUID } from 'node:crypto'
-import { WARP_METHODS, type ServerProfile, type WarpMethod, type WarpOptions } from '../shared/types'
+import { WARP_METHODS, type ServerProfile, type WarpFound, type WarpMethod, type WarpOptions } from '../shared/types'
 
 /** Name of the identity file Aether keeps beside `--config` (its WARP account); keep it, or Cloudflare rate-limits new sign-ups. */
 export const WARP_IDENTITY_FILE = 'aether-masque.toml'
@@ -25,6 +25,23 @@ export function newWarpServer(): ServerProfile {
 
 export function isWarp(s: ServerProfile): boolean {
   return s.engine === 'aether'
+}
+
+/** A config saved by "Find configs": one method on one gateway. */
+export function newWarpConfig(found: WarpFound): ServerProfile {
+  return {
+    ...newWarpServer(),
+    name: `Free WARP · ${warpLabel(found.method)}${found.exit ? ` · ${found.exit}` : ''}`,
+    server: found.peer.replace(/:\d+$/, ''),
+    port: Number(found.peer.split(':').pop()) || 0,
+    link: `warp://${found.method}@${found.peer}`,
+    warp: { method: found.method, peer: found.peer, exit: found.exit, readyMs: found.readyMs }
+  }
+}
+
+/** True for configs saved by "Find configs" (the plain Free WARP server finds its way each time). */
+export function isWarpConfig(s: ServerProfile): boolean {
+  return isWarp(s) && !!s.warp?.peer
 }
 
 /** The methods to try, in the order to try them. */
@@ -53,13 +70,17 @@ const METHOD_ARGS: Record<WarpMethod, string[]> = {
  * never waits for input. `configFile` is Aether's base identity path; its WARP account
  * files are kept beside it.
  */
-export function warpArgs(method: WarpMethod, port: number, configFile: string): string[] {
+export function warpArgs(method: WarpMethod, port: number, configFile: string, peer?: string, fresh = false): string[] {
   return [
     ...METHOD_ARGS[method],
+    // A saved gateway: no scan. For Gool it is the outer (MASQUE) hop.
+    ...(peer ? ['--peer', peer] : []),
     // Stop at the first gateway that passes real traffic: connecting fast matters more here.
     '--scan',
     'turbo',
-    '--quick-reconnect',
+    // The last working gateway is one file shared by every method; "Find configs" ignores it
+    // so each method proves a gateway of its own.
+    fresh ? '--no-quick-reconnect' : '--quick-reconnect',
     '--bind',
     `127.0.0.1:${port}`,
     '--config',
@@ -74,6 +95,24 @@ export function warpArgs(method: WarpMethod, port: number, configFile: string): 
 /** Methods whose point is an exit outside Iran; Auto waits a little for them before taking another. */
 export function prefersForeignExit(method: WarpMethod): boolean {
   return method === 'gool'
+}
+
+/** What Bridge remembers between connects, kept in WARP_STATE_FILE beside Aether's files. */
+export interface WarpState {
+  /** When Auto last waited for Gool and Gool didn't get through. */
+  goolMissedAt?: number
+}
+
+export const WARP_STATE_FILE = 'bridge-warp-state.json'
+/** After Gool misses, how long Auto connects without waiting for it (it still runs in the race). */
+export const GOOL_RETRY_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Whether Auto should hold a working tunnel back to give Gool time. Not when Gool missed
+ * recently: on networks where it never gets through, every connect would be slower for nothing.
+ */
+export function waitForGool(state: WarpState, now = Date.now()): boolean {
+  return !state.goolMissedAt || now - state.goolMissedAt >= GOOL_RETRY_MS
 }
 
 /**
@@ -114,6 +153,11 @@ export function warpReady(text: string, port: number): boolean {
 /** The exit country Aether found for its tunnel ("masque exit: 104.28.214.161, IR via FRA, ..."). */
 export function warpExitCountry(text: string): string | undefined {
   return text.match(/\bexit: \S+, ([A-Z]{2}) via /)?.[1]
+}
+
+/** The Cloudflare gateway Aether connects to ("[+] using cloudflare edge 162.159.198.131:443"). */
+export function warpGateway(text: string): string | undefined {
+  return text.match(/using cloudflare edge (\S+:\d+)/)?.[1]
 }
 
 /** Aether's line when the IPv6 method can't work at all on this network. */
