@@ -129,6 +129,7 @@ export function Servers({ state, status, run }: PageProps) {
             sub={sub}
             servers={state.servers.filter((s) => s.subscriptionId === sub.id)}
             selectedId={state.selectedServerId}
+            pinging={state.pinging}
             testing={testing === sub.id}
             onTest={(ids) => test(sub.id, ids)}
             run={run}
@@ -149,7 +150,7 @@ export function Servers({ state, status, run }: PageProps) {
             </CardHeader>
             <CardContent className="flex flex-col gap-1.5">
               {manual.map((s) => (
-                <ServerRow key={s.id} server={s} selected={s.id === state.selectedServerId} run={run} />
+                <ServerRow key={s.id} server={s} selected={s.id === state.selectedServerId} pinging={state.pinging?.includes(s.id)} run={run} />
               ))}
             </CardContent>
           </Card>
@@ -162,8 +163,16 @@ export function Servers({ state, status, run }: PageProps) {
   )
 }
 
-function SubscriptionCard(props: { sub: Subscription; servers: ServerProfile[]; selectedId?: string; testing: boolean; onTest: (ids: string[]) => void; run: PageProps['run'] }) {
-  const { sub, servers, selectedId, testing, onTest, run } = props
+function SubscriptionCard(props: {
+  sub: Subscription
+  servers: ServerProfile[]
+  selectedId?: string
+  pinging?: string[]
+  testing: boolean
+  onTest: (ids: string[]) => void
+  run: PageProps['run']
+}) {
+  const { sub, servers, selectedId, pinging, testing, onTest, run } = props
   const [updating, setUpdating] = useState(false)
   const skipped = sub.skipped || []
   const u = sub.usage
@@ -279,7 +288,7 @@ function SubscriptionCard(props: { sub: Subscription; servers: ServerProfile[]; 
 
         <div className="flex flex-col gap-1.5">
           {servers.map((s) => (
-            <ServerRow key={s.id} server={s} selected={s.id === selectedId} run={run} />
+            <ServerRow key={s.id} server={s} selected={s.id === selectedId} pinging={pinging?.includes(s.id)} run={run} />
           ))}
         </div>
 
@@ -475,7 +484,7 @@ function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; se
   )
 }
 
-function ServerRow({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
+function ServerRow({ server: s, selected, pinging, run }: { server: ServerProfile; selected: boolean; pinging?: boolean; run: PageProps['run'] }) {
   const engine = s.engine === 'xray' ? 'xray' : 'sing-box'
   const canSwitch = !!s.xray && !s.xrayOnly
   return (
@@ -507,7 +516,7 @@ function ServerRow({ server: s, selected, run }: { server: ServerProfile; select
         </TooltipTrigger>
         <TooltipContent>{s.xrayOnly ? 'Only the Xray core supports this config' : canSwitch ? 'Both cores can run this; switch in the menu' : 'Runs on sing-box'}</TooltipContent>
       </Tooltip>
-      <LatencyPill ms={s.latency} className="w-16 justify-center" />
+      <LatencyPill ms={s.latency} pinging={pinging} className="w-16 justify-center" />
       <DropdownMenu>
         <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
           <Button variant="ghost" size="icon-sm" className="opacity-60 group-hover:opacity-100">

@@ -120,9 +120,13 @@ export function createMockBridge(): BridgeApi {
       } else state.selectedServerId = id
       emitState()
     },
-    testLatency: async () => {
-      await wait(800)
-      state.servers.forEach((s) => (s.latency = Math.random() < 0.2 ? -1 : Math.round(100 + Math.random() * 900)))
+    testLatency: async (ids) => {
+      const targets = state.servers.filter((s) => s.engine !== 'aether' && (!ids || ids.includes(s.id)))
+      state.pinging = targets.map((s) => s.id)
+      emitState()
+      await wait(2200)
+      targets.forEach((s) => (s.latency = Math.random() < 0.2 ? -1 : Math.round(100 + Math.random() * 900)))
+      state.pinging = []
       emitState()
     },
     addSubscription: async () => ({ added: 0, errors: ['Mock backend cannot fetch'] }),

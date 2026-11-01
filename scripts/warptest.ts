@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { Core } from '../src/main/core'
 import { parseLink } from '../src/main/parser'
 import { DEFAULT_SETTINGS } from '../src/main/store'
-import { GOOL_RETRY_MS, isWarpConfig, newWarpConfig, newWarpServer, parseWarpLine, WARP_IDENTITY_FILE, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpMethods, warpReady } from '../src/main/warp'
+import { GOOL_RETRY_MS, isWarpConfig, newWarpConfig, newWarpServer, parseWarpLine, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpMethods, warpReady } from '../src/main/warp'
 
 const root = join(__dirname, '..')
 let failed = 0
@@ -40,6 +40,7 @@ function offline() {
   check(waitForGool({}, now), 'Auto waits for Gool when it has no history')
   check(!waitForGool({ goolMissedAt: now - 60_000 }, now), "Auto doesn't wait for Gool right after a miss")
   check(warpGateway('[+] using cloudflare edge 162.159.198.131:443') === '162.159.198.131:443', 'gateway read from the log')
+  check(WARP_EXIT_REFUSED.test('[-] exit location IR rejected (exit must not be in IR)') && !WARP_EXIT_REFUSED.test('[+] exit location DE accepted (exit must not be in IR)'), 'a refused exit is spotted')
   const peerArgs = warpArgs('gool', 1234, 'C:\\data\\aether.toml', '162.159.198.131:443').join(' ')
   check(peerArgs.includes('--peer 162.159.198.131:443'), `a saved config names its gateway: ${peerArgs}`)
   const cfg = newWarpConfig({ method: 'h2', peer: '162.159.198.183:443', exit: 'IR', readyMs: 6800 })

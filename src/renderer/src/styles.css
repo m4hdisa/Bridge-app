@@ -2,8 +2,8 @@
 @import 'tw-animate-css';
 
 /*
- * Bridge theme: true neutral dark grays (no tint, shadcn "neutral") with an orange accent.
- * Every color is a token here; change the look by editing this block only.
+ * Bridge theme: true neutral dark grays (no tint, shadcn "neutral") with a blue accent, matching
+ * the app icon. Every color is a token here; change the look by editing this block only.
  * Token names follow shadcn/ui so its components pick them up.
  */
 :root {
@@ -16,8 +16,10 @@
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
 
-  --primary: oklch(0.705 0.187 48);
-  --primary-foreground: oklch(0.18 0.035 45);
+  --primary: oklch(0.623 0.188 259.8);
+  /* The darker end of the primary gradient (the connected shield). */
+  --primary-deep: oklch(0.52 0.2 264);
+  --primary-foreground: oklch(0.985 0.004 255);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.245 0 0);
@@ -28,12 +30,12 @@
 
   --border: oklch(1 0 0 / 9%);
   --input: oklch(1 0 0 / 13%);
-  --ring: oklch(0.705 0.187 48);
+  --ring: oklch(0.623 0.188 259.8);
 
-  /* Status colors (not part of stock shadcn). */
+  /* Status colors (not part of stock shadcn). Info is cyan so it stays apart from the blue accent. */
   --success: oklch(0.74 0.15 152);
   --warning: oklch(0.82 0.15 82);
-  --info: oklch(0.72 0.11 230);
+  --info: oklch(0.76 0.12 210);
 
   --sidebar: oklch(0.125 0 0);
   --sidebar-foreground: oklch(0.87 0 0);
@@ -57,6 +59,7 @@
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
+  --color-primary-deep: var(--primary-deep);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -91,7 +94,7 @@
     font-feature-settings: 'tnum' 0;
   }
   ::selection {
-    background: oklch(0.705 0.187 48 / 35%);
+    background: color-mix(in oklch, var(--primary) 35%, transparent);
   }
   /* Thin, quiet scrollbars to match the dark surface. */
   ::-webkit-scrollbar {
@@ -117,16 +120,58 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The connect button: a soft orange halo that breathes while connected. */
-@keyframes halo {
+/* The connect shield: a soft glow in the accent color that breathes while connected. */
+@keyframes shield-glow {
   0%,
   100% {
-    box-shadow: 0 0 0 0 oklch(0.705 0.187 48 / 35%), 0 0 40px 4px oklch(0.705 0.187 48 / 25%);
+    filter: drop-shadow(0 0 14px color-mix(in oklch, var(--primary) 35%, transparent)) drop-shadow(0 10px 24px color-mix(in oklch, var(--primary) 20%, transparent));
   }
   50% {
-    box-shadow: 0 0 0 10px oklch(0.705 0.187 48 / 0%), 0 0 60px 10px oklch(0.705 0.187 48 / 30%);
+    filter: drop-shadow(0 0 26px color-mix(in oklch, var(--primary) 50%, transparent)) drop-shadow(0 14px 36px color-mix(in oklch, var(--primary) 28%, transparent));
   }
 }
-@utility animate-halo {
-  animation: halo 2.6s ease-in-out infinite;
+@utility animate-shield-glow {
+  animation: shield-glow 2.6s ease-in-out infinite;
+}
+/* While connecting, a bright segment runs around the shield's edge (the path has pathLength 100). */
+@keyframes shield-trace {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+@utility animate-shield-trace {
+  stroke-dasharray: 22 78;
+  animation: shield-trace 1.4s linear infinite;
+}
+
+/* Loading dots (a ping in progress): each one rises and brightens in turn. */
+@keyframes loading-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0) scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1);
+  }
+}
+@utility animate-loading-dot {
+  animation: loading-dot 1.1s ease-in-out infinite;
+}
+
+/* Health tiles: a ring that grows and fades from the icon while a check runs. */
+@keyframes radar {
+  from {
+    r: 19px;
+    stroke-opacity: 0.7;
+  }
+  to {
+    r: 60px;
+    stroke-opacity: 0;
+  }
+}
+@utility animate-radar {
+  animation: radar 1.8s ease-out infinite;
 }

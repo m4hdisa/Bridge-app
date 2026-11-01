@@ -33,9 +33,28 @@ function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
 }
 
+/** Servers being pinged right now, so their latency shows a loading animation. */
+const pinging = new Set<string>()
+
 function pushState(): void {
-  send('state', store.state)
+  send('state', { ...store.state, pinging: [...pinging] })
   updateTray()
+}
+
+/** Tests these servers' latency, saves the results, and shows them as pinging meanwhile. */
+async function ping(targets: ServerProfile[]): Promise<void> {
+  const ids = targets.filter((s) => !isWarp(s)).map((s) => s.id)
+  for (const id of ids) pinging.add(id)
+  pushState()
+  try {
+    const results = await core.testLatency(targets, store.state.settings.testUrl)
+    store.update((s) => {
+      for (const server of s.servers) if (results.has(server.id)) server.latency = results.get(server.id)
+    })
+  } finally {
+    for (const id of ids) pinging.delete(id)
+    pushState()
+  }
 }
 
 // Look up the VPN's exit location once per connection (keyed by its start time).
@@ -177,12 +196,8 @@ function pingAll(reason: string): Promise<void> {
   pingRun ??= (async () => {
     if (!store.state.servers.length) return
     core.log(`Testing all servers (${reason})`)
-    const results = await core.testLatency(store.state.servers, store.state.settings.testUrl)
-    store.update((s) => {
-      for (const server of s.servers) if (results.has(server.id)) server.latency = results.get(server.id)
-    })
+    await ping(store.state.servers)
     lastPingAt = Date.now()
-    pushState()
   })().finally(() => (pingRun = undefined))
   return pingRun
 }
@@ -423,13 +438,8 @@ handle('setWarpMethod', async (id: string, method: WarpOptions['method']) => {
   if (store.state.selectedServerId === id) await reconnectIfRunning()
 })
 handle('testLatency', async (ids?: string[]) => {
-  const targets = store.state.servers.filter((s) => !ids || ids.includes(s.id))
-  const results = await core.testLatency(targets, store.state.settings.testUrl)
-  store.update((s) => {
-    for (const server of s.servers) if (results.has(server.id)) server.latency = results.get(server.id)
-  })
+  await ping(store.state.servers.filter((s) => !ids || ids.includes(s.id)))
   if (!ids) lastPingAt = Date.now()
-  pushState()
 })
 
 handle('addSubscription', async (name: string, url: string) => {

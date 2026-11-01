@@ -8,9 +8,9 @@ import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, with
 import { connect } from 'node:net'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
-import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_IDENTITY_FILE, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
+import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, networkInfo, setSystemProxy } from './system'
-import { usesTun } from '../shared/types'
+import { HEALTH_INTERVAL_MS, usesTun } from '../shared/types'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats, WarpFound, WarpMethod } from '../shared/types'
 
 export interface CorePaths {
@@ -83,7 +83,6 @@ interface WarpWinner {
   peer?: string
   readyMs: number
 }
-const HEALTH_INTERVAL_MS = 20000
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
 
@@ -280,12 +279,18 @@ export class Core extends EventEmitter {
       let won: WarpWinner | undefined
       let exit: string | undefined
       let gateway: string | undefined
+      let refused = 0
       const child = this.spawnAether(warpArgs(method, port, join(this.warpDir, 'aether.toml'), opts.peer, opts.fresh), `warp ${method}`, (text) => {
         // Only Gool checks its exit before serving; the others print it just after.
         if (won) return void (won.exit ??= warpExitCountry(text))
         exit = warpExitCountry(text) ?? exit
         // The first edge is Gool's outer hop, the one a saved config has to name.
         gateway ??= warpGateway(text)
+        if (WARP_EXIT_REFUSED.test(text) && ++refused >= WARP_MAX_EXIT_REFUSED) {
+          clearTimeout(timer)
+          child.kill()
+          return reject(new Error(`${warpLabel(method)}: works, but Cloudflare gave it an exit in ${exit ?? "the refused country"} ${refused} times, so it can't give a foreign exit on this network`))
+        }
         if (WARP_NO_IPV6.test(text)) {
           clearTimeout(timer)
           child.kill()

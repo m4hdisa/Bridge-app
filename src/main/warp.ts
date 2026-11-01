@@ -160,5 +160,14 @@ export function warpGateway(text: string): string | undefined {
   return text.match(/using cloudflare edge (\S+:\d+)/)?.[1]
 }
 
+/**
+ * Aether's line when it drops a working tunnel over its exit country ("exit location IR
+ * rejected"). From Iran, Gool's inner hop is dialled from an Iranian-registered WARP address, so
+ * Cloudflare often gives Gool an Iranian exit too, every time; Aether then retries forever.
+ */
+export const WARP_EXIT_REFUSED = /exit location [A-Z]{2} rejected/
+/** After this many refused exits, the method gives up: its exit won't be foreign on this network. */
+export const WARP_MAX_EXIT_REFUSED = 2
+
 /** Aether's line when the IPv6 method can't work at all on this network. */
 export const WARP_NO_IPV6 = /host has no IPv6 route/

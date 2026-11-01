@@ -1,7 +1,7 @@
 {
   "name": "bridge",
   "productName": "Bridge",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Windows VPN client (VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC) with per-app routing",
   "main": "./out/main/index.js",
   "private": true,
@@ -9,7 +9,7 @@
   "author": "m4hdisa",
   "scripts": {
     "fetch-core": "node scripts/fetch-core.mjs",
-    "make-icon": "node scripts/make-icon.mjs",
+    "make-icon": "tsx scripts/make-icon.ts",
     "dev": "electron-vite dev",
     "dev:ui": "vite --config vite.ui.config.ts",
     "build": "electron-vite build",

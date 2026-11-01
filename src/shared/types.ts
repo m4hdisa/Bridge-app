@@ -169,6 +169,8 @@ export interface AppState {
   selectedServerId?: string
   appRules: AppRule[]
   settings: Settings
+  /** Servers whose ping is being tested right now. Only in what the window sees; never saved. */
+  pinging?: string[]
 }
 
 export type CoreState = 'stopped' | 'starting' | 'running' | 'stopping'
@@ -180,6 +182,9 @@ export interface HealthCheck {
   error?: string
   checkedAt: number
 }
+
+/** How often Bridge checks the connection's health while connected. */
+export const HEALTH_INTERVAL_MS = 20_000
 
 export interface Health {
   /** A request through the VPN server. */

@@ -2,6 +2,7 @@
 import * as React from 'react'
 import { AppWindow, Globe } from 'lucide-react'
 import * as Flags from 'country-flag-icons/react/3x2'
+import { BRIDGE_PATHS, BRIDGE_STROKE, LOGO_BOTTOM, LOGO_TILE, LOGO_TOP } from '../../../shared/logo'
 import type { AppRoute } from '../../../shared/types'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -33,14 +34,31 @@ export function StatusDot({ tone, pulse, className }: { tone: Tone; pulse?: bool
 }
 
 /** Latency as a colored pill: green < 300 ms, amber < 800 ms, red above or failed. */
-export function LatencyPill({ ms, className }: { ms?: number; className?: string }) {
+export function LatencyPill({ ms, pinging, className }: { ms?: number; pinging?: boolean; className?: string }) {
+  if (pinging) return <LoadingDots className={className} />
   if (ms === undefined) return <span className={cn('text-muted-foreground text-xs', className)}>—</span>
-  if (ms < 0) return <Badge variant="destructive" className={className}>Timeout</Badge>
+  if (ms < 0)
+    return (
+      <Badge variant="destructive" className={className}>
+        Timeout
+      </Badge>
+    )
   const variant = ms < 300 ? 'success' : ms < 800 ? 'warning' : 'destructive'
   return (
     <Badge variant={variant} className={cn('tabular', className)}>
       {ms} ms
     </Badge>
+  )
+}
+
+/** Three dots that pulse in turn: a ping (or any small wait) in progress. */
+export function LoadingDots({ className }: { className?: string }) {
+  return (
+    <span role="status" aria-label="Testing" className={cn('inline-flex h-5 items-center justify-center gap-1', className)}>
+      {[0, 160, 320].map((delay) => (
+        <span key={delay} className="bg-primary animate-loading-dot size-1.5 rounded-full" style={{ animationDelay: `${delay}ms` }} />
+      ))}
+    </span>
   )
 }
 
@@ -58,15 +76,38 @@ export function Flag({ code, className }: { code?: string; className?: string })
   return <Svg title={code} className={cn('h-3.5 w-5 shrink-0 rounded-[3px] shadow-[0_0_0_1px] shadow-white/10', className)} />
 }
 
+/** Bridge's logo: a rounded blue tile with a plain white bridge (the app icon is drawn from the same geometry). */
+export function BridgeLogo({ className }: { className?: string }) {
+  const id = React.useId()
+  return (
+    <svg viewBox="0 0 100 100" className={cn('shrink-0', className)} role="img" aria-label="Bridge">
+      <defs>
+        <linearGradient id={`${id}-fill`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={LOGO_TOP} />
+          <stop offset="100%" stopColor={LOGO_BOTTOM} />
+        </linearGradient>
+        <linearGradient id={`${id}-shine`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="white" stopOpacity="0.3" />
+          <stop offset="50%" stopColor="white" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={LOGO_TILE} fill={`url(#${id}-fill)`} />
+      <path d={LOGO_TILE} fill={`url(#${id}-shine)`} />
+      <g fill="none" stroke="white" strokeWidth={BRIDGE_STROKE} strokeLinecap="round" strokeLinejoin="round">
+        {BRIDGE_PATHS.map((d) => (
+          <path key={d} d={d} />
+        ))}
+      </g>
+    </svg>
+  )
+}
+
 /** Shown instead of a country flag when the VPN is Cloudflare WARP: the exit is Cloudflare's network. */
 export function CloudflareMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 16" className={cn('h-3.5 w-5 shrink-0', className)} role="img" aria-label="Cloudflare">
       <title>Cloudflare</title>
-      <path
-        fill="#F38020"
-        d="M19.2 6.6A7.2 7.2 0 0 0 5.4 4.9 5.6 5.6 0 0 0 5.6 16h13.2a4.7 4.7 0 0 0 .4-9.4Z"
-      />
+      <path fill="#F38020" d="M19.2 6.6A7.2 7.2 0 0 0 5.4 4.9 5.6 5.6 0 0 0 5.6 16h13.2a4.7 4.7 0 0 0 .4-9.4Z" />
       <path fill="#FBAD41" d="M19.2 6.6c-.3 0-.6 0-.9.1a5 5 0 0 1-4.4 9.3h4.9a4.7 4.7 0 0 0 .4-9.4Z" />
     </svg>
   )
@@ -98,7 +139,19 @@ export function EmptyState({ icon: Icon, title, description, action }: { icon: R
 }
 
 /** A label + value block used in stat rows. */
-export function Stat({ label, value, hint, icon: Icon, className }: { label: string; value: React.ReactNode; hint?: React.ReactNode; icon?: React.ComponentType<{ className?: string }>; className?: string }) {
+export function Stat({
+  label,
+  value,
+  hint,
+  icon: Icon,
+  className
+}: {
+  label: string
+  value: React.ReactNode
+  hint?: React.ReactNode
+  icon?: React.ComponentType<{ className?: string }>
+  className?: string
+}) {
   return (
     <div className={cn('flex flex-col gap-1', className)}>
       <div className="text-muted-foreground flex items-center gap-1.5 text-xs font-medium tracking-wide uppercase">
