@@ -84,8 +84,12 @@ interface WarpWinner {
   peer?: string
   readyMs: number
 }
-/** Iranian sites for the Direct internet check (see probeDirect). */
-const DIRECT_TEST_URLS = ['https://www.aparat.com/', 'https://www.digikala.com/', 'https://divar.ir/']
+/**
+ * Iranian sites for the Direct internet check (see probeDirect). Plain HTTP on purpose: their
+ * CDN answers with a redirect right away, so the time is close to two round trips. Over HTTPS
+ * the site builds its whole home page first, which added 100-300 ms that wasn't the network.
+ */
+const DIRECT_TEST_URLS = ['http://www.aparat.com/', 'http://www.digikala.com/', 'http://divar.ir/']
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
 
