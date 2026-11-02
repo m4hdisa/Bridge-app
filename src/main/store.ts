@@ -35,7 +35,10 @@ export class Store {
       for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
         if (saved.settings?.[key] !== undefined) Object.assign(settings, { [key]: saved.settings[key] })
       }
-      return { ...empty, ...saved, settings }
+      // The "Via EZConnect" server of the 0.4.7 test builds was removed again.
+      const servers = (saved.servers || []).filter((s) => !(s as { otherVpn?: boolean }).otherVpn)
+      const selectedServerId = servers.some((s) => s.id === saved.selectedServerId) ? saved.selectedServerId : undefined
+      return { ...empty, ...saved, servers, selectedServerId, settings }
     } catch {
       // Keep the broken file for inspection and start fresh.
       renameSync(this.file, this.file + '.broken')

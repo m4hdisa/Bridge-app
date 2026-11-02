@@ -155,7 +155,7 @@ export function App() {
       api.onStatus((s) => {
         setStatus(s)
         if (s.state === 'stopped') setStats(undefined)
-        if (s.error && pageRef.current !== 'home') toast.error(s.error, errorToast(() => setPage('logs')))
+        if (s.error && pageRef.current !== 'home') toast.error(t(s.error), errorToast(() => setPage('logs')))
       }),
       api.onStats(setStats),
       api.onLogs((lines) => setLogs((prev) => [...prev, ...lines].slice(-1000))),

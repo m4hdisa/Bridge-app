@@ -236,7 +236,7 @@ export function Home({ state, status, stats, run, go }: PageProps) {
 function ConnectionPanel({ status, viaWarp, down, up }: { status: CoreStatus; viaWarp: boolean; down?: number; up?: number }) {
   const exit = status.exit
   return (
-    <div className="bg-card/60 w-full max-w-[19rem] overflow-hidden rounded-xl border text-start text-sm shadow-[inset_0_1px_0_oklch(1_0_0/4%)]">
+    <div className="bg-card/60 w-full max-w-xs overflow-hidden rounded-xl border text-start text-sm shadow-[inset_0_1px_0_oklch(1_0_0/4%)]">
       <div className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5">
         {exit ? (
           <>
@@ -281,7 +281,7 @@ function ConnectError({ error, onRetry, onLogs }: { error: string; onRetry: () =
       <TriangleAlert />
       <AlertTitle>{t('Couldn\'t connect')}</AlertTitle>
       <AlertDescription>
-        <p className="line-clamp-3">{error}</p>
+        <p className="line-clamp-3">{t(error)}</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <Button size="sm" onClick={onRetry}>
             {t('Try again')}

@@ -8,6 +8,7 @@ import { describeLink, extractLinks, parseLink } from '../src/main/parser'
 import { buildConfig, buildTestConfig } from '../src/main/config'
 import { usageFromNames } from '../src/main/subscription'
 import { isNewer } from '../src/shared/version'
+import { handoffCandidates, isPublicIPv4 } from '../src/main/handoff'
 import type { AppRule, ConnectionMode, Settings } from '../src/shared/types'
 
 const root = join(__dirname, '..')
@@ -181,6 +182,31 @@ const versionCases: [string, string, boolean][] = [
 for (const [a, b, want] of versionCases) {
   if (isNewer(a, b) === want) ok(`${a} ${want ? '>' : 'not >'} ${b}`)
   else fail(`${a} vs ${b}`, `expected ${want}`)
+}
+
+console.log('\nOther VPN handoff (UDP of Other VPN apps goes straight to the other adapter)')
+const ipCases: [string, boolean][] = [['203.0.113.10', true], ['8.8.8.8', true], ['10.1.2.3', false], ['192.168.1.5', false], ['172.20.0.1', false], ['100.64.0.1', false], ['198.18.0.5', false], ['127.0.0.1', false], ['224.0.0.251', false], ['300.1.1.1', false], ['::1', false]]
+for (const [ip, want] of ipCases) {
+  if (isPublicIPv4(ip) === want) ok(`${ip} ${want ? 'public' : 'not public'}`)
+  else fail(ip, `expected ${want}`)
+}
+const conns = [
+  { chains: ['direct-other'], metadata: { network: 'udp', destinationIP: '203.0.113.10' } },
+  { chains: ['direct-other'], metadata: { network: 'tcp', destinationIP: '198.51.100.20' } },
+  { chains: ['direct-other'], metadata: { network: 'udp', destinationIP: '198.51.100.3' } },
+  { chains: ['proxy'], metadata: { network: 'udp', destinationIP: '198.51.100.3' } },
+  { chains: ['direct-other'], metadata: { network: 'udp', destinationIP: '192.168.1.1' } },
+  { chains: ['direct-other'], metadata: { network: 'udp', destinationIP: '203.0.113.11' } }
+]
+const handoffCases: [string, Set<string>, number | undefined, string[]][] = [
+  ['UDP only, no shared or private addresses', new Set(), undefined, ['203.0.113.10', '203.0.113.11']],
+  ['skips addresses already handed off', new Set(['203.0.113.10']), undefined, ['203.0.113.11']],
+  ['stops at the route limit', new Set(['1.1.1.1']), 2, ['203.0.113.10']]
+]
+for (const [label, known, limit, want] of handoffCases) {
+  const got = handoffCandidates(conns, known, limit)
+  if (JSON.stringify(got) === JSON.stringify(want)) ok(label)
+  else fail(label, `got ${JSON.stringify(got)}`)
 }
 
 rmSync(dir, { recursive: true, force: true })

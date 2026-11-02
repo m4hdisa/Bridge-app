@@ -43,5 +43,6 @@ export function ago(time: number): string {
 /** Electron wraps IPC errors as "Error invoking remote method 'x': Error: msg". */
 export function errorMessage(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e)
-  return msg.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+  // Main-process messages are in English; the known ones have a translation.
+  return t(msg.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
 }

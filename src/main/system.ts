@@ -131,6 +131,21 @@ $defaults = @($routes | Sort-Object $metric | ForEach-Object { "$($_.InterfaceAl
   }
 }
 
+/**
+ * Adds (or removes) one host route per IPv4 address on an adapter. They live in the active
+ * store only, so a reboot or the adapter going away clears them too.
+ */
+export async function setHostRoutes(ips: string[], interfaceAlias: string, add: boolean): Promise<void> {
+  if (!ips.length) return
+  const list = ips.map((ip) => psQuote(`${ip}/32`)).join(',')
+  const alias = psQuote(interfaceAlias)
+  await powershell(
+    add
+      ? `foreach ($p in @(${list})) { New-NetRoute -DestinationPrefix $p -InterfaceAlias ${alias} -NextHop 0.0.0.0 -RouteMetric 0 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null }`
+      : `foreach ($p in @(${list})) { Remove-NetRoute -DestinationPrefix $p -InterfaceAlias ${alias} -Confirm:$false -ErrorAction SilentlyContinue }`
+  )
+}
+
 /** Clears Windows' DNS cache, so apps don't keep fake IPs after disconnecting. */
 export async function flushDns(): Promise<void> {
   await exec('ipconfig', ['/flushdns'], { windowsHide: true }).catch(() => undefined)

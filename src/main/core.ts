@@ -9,7 +9,8 @@ import { connect } from 'node:net'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
 import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
-import { clearSystemProxy, flushDns, freePort, networkInfo, setSystemProxy } from './system'
+import { clearSystemProxy, flushDns, freePort, networkInfo, setHostRoutes, setSystemProxy } from './system'
+import { handoffCandidates } from './handoff'
 import { HEALTH_INTERVAL_MS, usesTun } from '../shared/types'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats, WarpFound, WarpMethod } from '../shared/types'
 
@@ -55,7 +56,7 @@ interface ClashConnection {
   upload: number
   download: number
   chains?: string[]
-  metadata: { processPath?: string }
+  metadata: { processPath?: string; network?: string; destinationIP?: string }
 }
 
 /** Thrown when the user disconnects while Bridge is still connecting. */
@@ -83,6 +84,8 @@ interface WarpWinner {
   peer?: string
   readyMs: number
 }
+/** Iranian sites for the Direct internet check (see probeDirect). */
+const DIRECT_TEST_URLS = ['https://www.aparat.com/', 'https://www.digikala.com/', 'https://divar.ir/']
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
 
@@ -161,6 +164,9 @@ export class Core extends EventEmitter {
   private lastTotals = { up: 0, down: 0, at: 0 }
   private seenConns = new Map<string, { path: string; up: number; down: number }>()
   private appTotals = new Map<string, AppTraffic>()
+  /** The other tool's adapter that "Other VPN" apps are handed to (TUN modes only), see handoff.ts. */
+  private handoffIf?: string
+  private handoffIps = new Set<string>()
 
   private resolver: ServerResolver
 
@@ -653,6 +659,7 @@ export class Core extends EventEmitter {
         this.proxyPort = settings.mixedPort
       }
       this.resetStats()
+      this.handoffIf = tun ? net.otherInterface : undefined
       this.statsTimer = setInterval(() => void this.pollStats(), 1000)
       this.setStatus({
         state: 'running',
@@ -694,12 +701,23 @@ export class Core extends EventEmitter {
     }
   }
 
+  /**
+   * Direct internet is checked against several Iranian sites at once and the fastest answer
+   * counts: from Iran, foreign test URLs (gstatic) often fail or crawl without a VPN, which
+   * made the check look broken while the connection was fine.
+   */
+  private async probeDirect(api: ClashApi): Promise<HealthCheck> {
+    const checks = await Promise.all(DIRECT_TEST_URLS.map((url) => this.probe(api, 'direct', url)))
+    const ok = checks.filter((c) => c.ok).sort((a, b) => a.latency! - b.latency!)
+    return ok[0] ?? checks[0]
+  }
+
   /** Checks the VPN server and the normal internet, and reports the result in status.health. */
   async checkHealth(): Promise<void> {
     const api = this.api
     if (!api || this.status.state !== 'running') return
     const testUrl = this.settings?.testUrl || 'https://www.gstatic.com/generate_204'
-    const [server, internet] = await Promise.all([this.probe(api, 'proxy', testUrl), this.probe(api, 'direct', testUrl)])
+    const [server, internet] = await Promise.all([this.probe(api, 'proxy', testUrl), this.probeDirect(api)])
     if (this.api !== api || this.status.state !== 'running') return
     const prev = this.status.health?.server
     if (prev && prev.ok !== server.ok) {
@@ -753,6 +771,13 @@ export class Core extends EventEmitter {
     if (this.statsTimer) clearInterval(this.statsTimer)
     if (this.healthTimer) clearInterval(this.healthTimer)
     this.statsTimer = this.healthTimer = undefined
+    const handoffIf = this.handoffIf
+    const handedOff = [...this.handoffIps]
+    this.handoffIf = undefined
+    this.handoffIps.clear()
+    if (handoffIf && handedOff.length) {
+      await setHostRoutes(handedOff, handoffIf, false).catch((e) => this.log(`Could not remove the routes to "${handoffIf}": ${e}`, 'warn'))
+    }
     const usedTun = !!this.child && !!this.settings && usesTun(this.settings.mode)
     if (this.proxyPort !== undefined) {
       await clearSystemProxy(this.proxyPort).catch((e) => this.log(`Could not clear system proxy: ${e}`, 'warn'))
@@ -819,6 +844,7 @@ export class Core extends EventEmitter {
         this.seenConns.set(c.id, { path, up: c.upload, down: c.download })
         live.set(path, (live.get(path) || 0) + 1)
       }
+      if (this.handoffIf) this.handOff(snap.connections || [])
       const liveIds = new Set((snap.connections || []).map((c) => c.id))
       for (const id of this.seenConns.keys()) if (!liveIds.has(id)) this.seenConns.delete(id)
       for (const app of this.appTotals.values()) {
@@ -839,6 +865,18 @@ export class Core extends EventEmitter {
     } catch {
       // The core may be restarting; the next poll will catch up.
     }
+  }
+
+  /** Routes new UDP destinations of "Other VPN" apps straight to the other tool's adapter. */
+  private handOff(connections: ClashConnection[]): void {
+    const adapter = this.handoffIf
+    const ips = adapter ? handoffCandidates(connections, this.handoffIps) : []
+    if (!adapter || !ips.length) return
+    for (const ip of ips) this.handoffIps.add(ip)
+    setHostRoutes(ips, adapter, true).then(
+      () => this.log(`Handed ${ips.length} address(es) of "Other VPN" apps straight to "${adapter}": ${ips.join(', ')}`),
+      (e) => this.log(`Could not add routes to "${adapter}": ${e}`, 'warn')
+    )
   }
 
   /**
