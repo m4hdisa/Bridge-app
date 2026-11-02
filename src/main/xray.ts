@@ -164,8 +164,6 @@ export function linkToXray(link: string): XrayOutbound {
       if (!u.user) throw new XrayLinkError('VLESS link is missing the UUID')
       const encryption = u.params.get('encryption') || 'none'
       const stream = streamFromParams(u.params)
-      // Xray 26 refuses VLESS with no TLS, no REALITY and no VLESS Encryption to a public server.
-      if (encryption === 'none' && !stream.security) throw new XrayLinkError('Xray refuses VLESS without TLS, REALITY or VLESS Encryption')
       return {
         protocol: 'vless',
         settings: clean({ address: u.host, port: u.port, id: u.user, encryption, flow: u.params.get('flow') || undefined }),
@@ -220,10 +218,26 @@ export function xrayWithServerIp(o: XrayOutbound, ip: string): XrayOutbound {
   out.settings.address = ip
   const st = out.streamSettings || {}
   if (st.security === 'tls') st.tlsSettings = { serverName: host, ...st.tlsSettings }
+  keepHost(st, host)
+  return out
+}
+
+/** Keeps the server's name in the HTTP Host of ws / httpupgrade / xhttp once Xray dials another address. */
+function keepHost(st: Record<string, any>, host: string): void {
   for (const key of ['wsSettings', 'httpupgradeSettings', 'xhttpSettings']) {
     if (st[key] && !st[key].host) st[key].host = host
   }
-  return out
+}
+
+/**
+ * Plain VLESS / Trojan: no TLS, no REALITY and no VLESS Encryption. Xray 26 only dials these
+ * to a private address, so Bridge points them at a local relay inside the same Xray instead
+ * (see buildXrayConfig). The traffic is the same; only the hop to the server changes.
+ */
+export function needsRelay(o: XrayOutbound): boolean {
+  if (o.streamSettings?.security) return false
+  if (o.protocol === 'vless') return (o.settings?.encryption || 'none') === 'none'
+  return o.protocol === 'trojan'
 }
 
 /**
@@ -231,22 +245,35 @@ export function xrayWithServerIp(o: XrayOutbound, ip: string): XrayOutbound {
  * `bindInterface` (the real Wi-Fi / Ethernet adapter) makes Xray's connection to the VPN
  * server skip Bridge's TUN. Without it every packet went through TUN twice (app -> TUN ->
  * sing-box -> Xray -> TUN again -> sing-box -> internet), which cost a lot of speed.
+ * An entry with `relayPort` (see needsRelay) dials 127.0.0.1:relayPort, where a
+ * dokodemo-door inbound forwards the bytes unchanged to the real server.
  */
-export function buildXrayConfig(entries: { port: number; outbound: XrayOutbound }[], logLevel = 'warning', bindInterface?: string): Record<string, any> {
-  return {
-    log: { loglevel: logLevel },
-    inbounds: entries.map((e, i) => ({
-      tag: `in-${i}`,
-      listen: '127.0.0.1',
-      port: e.port,
-      protocol: 'socks',
-      settings: { auth: 'noauth', udp: true }
-    })),
-    outbounds: entries.map((e, i) => {
-      const o = structuredClone(e.outbound)
-      if (bindInterface) o.streamSettings = { ...o.streamSettings, sockopt: { ...o.streamSettings?.sockopt, interface: bindInterface } }
-      return { ...o, tag: `out-${i}` }
-    }),
-    routing: { rules: entries.map((_, i) => ({ inboundTag: [`in-${i}`], outboundTag: `out-${i}` })) }
-  }
+export function buildXrayConfig(
+  entries: { port: number; outbound: XrayOutbound; relayPort?: number }[],
+  logLevel = 'warning',
+  bindInterface?: string
+): Record<string, any> {
+  const bind = (o: Record<string, any>) =>
+    bindInterface ? { ...o, streamSettings: { ...o.streamSettings, sockopt: { ...o.streamSettings?.sockopt, interface: bindInterface } } } : o
+  const inbounds: Record<string, any>[] = []
+  const outbounds: Record<string, any>[] = []
+  const rules: Record<string, any>[] = []
+  entries.forEach((e, i) => {
+    inbounds.push({ tag: `in-${i}`, listen: '127.0.0.1', port: e.port, protocol: 'socks', settings: { auth: 'noauth', udp: true } })
+    rules.push({ inboundTag: [`in-${i}`], outboundTag: `out-${i}` })
+    const o = structuredClone(e.outbound)
+    if (!e.relayPort) {
+      outbounds.push({ ...bind(o), tag: `out-${i}` })
+      return
+    }
+    const { host, port } = xrayServer(o)
+    o.settings.address = '127.0.0.1'
+    o.settings.port = e.relayPort
+    keepHost((o.streamSettings ??= {}), host)
+    outbounds.push({ ...o, tag: `out-${i}` })
+    inbounds.push({ tag: `relay-in-${i}`, listen: '127.0.0.1', port: e.relayPort, protocol: 'dokodemo-door', settings: { address: host, port, network: 'tcp,udp' } })
+    outbounds.push(bind({ tag: `relay-out-${i}`, protocol: 'freedom' }))
+    rules.push({ inboundTag: [`relay-in-${i}`], outboundTag: `relay-out-${i}` })
+  })
+  return { log: { loglevel: logLevel }, inbounds, outbounds, routing: { rules } }
 }

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, withServerIp, writeAppRuleSets, type ClashApi } from './config'
 import { connect } from 'node:net'
 import { pickDirectDns, ServerResolver } from './resolve'
-import { buildXrayConfig, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
+import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
 import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, networkInfo, setHostRoutes, setSystemProxy } from './system'
 import { handoffCandidates } from './handoff'
@@ -162,6 +162,12 @@ export class Core extends EventEmitter {
   private proxyPort?: number
   /** SOCKS port that always exits through the VPN (see BuildOptions.probePort); set while running. */
   probePort?: number
+  /** The WARP tunnel in use, if any; Aether keeps its exit country up to date. */
+  private wonWarp?: WarpWinner
+  /** Exit country Aether reported for the WARP tunnel in use, e.g. "DE". */
+  get warpExit(): string | undefined {
+    return this.wonWarp?.exit
+  }
   private statsTimer?: NodeJS.Timeout
   private healthTimer?: NodeJS.Timeout
   private settings?: Settings
@@ -212,7 +218,8 @@ export class Core extends EventEmitter {
     const exe = this.paths.xray
     if (!exe || !existsSync(exe)) throw new Error('Xray core not found; this server needs it (reinstall Bridge)')
     const file = join(this.paths.dataDir, `${name}.json`)
-    writeFileSync(file, JSON.stringify(buildXrayConfig(entries, 'warning', bindInterface), null, 2))
+    const withRelays = await Promise.all(entries.map(async (e) => (needsRelay(e.outbound) ? { ...e, relayPort: await freePort() } : e)))
+    writeFileSync(file, JSON.stringify(buildXrayConfig(withRelays, 'warning', bindInterface), null, 2))
     const child = spawn(exe, ['run', '-c', file], { windowsHide: true })
     const feed = (chunk: Buffer) => chunk.toString().split(/\r?\n/).filter((l) => l.trim()).forEach(this.xrayLine)
     child.stdout?.on('data', feed)
@@ -244,6 +251,7 @@ export class Core extends EventEmitter {
       void this.stop().then(() => this.setStatus({ state: 'stopped', error: 'Xray core stopped unexpectedly, see Logs' }))
     })
     this.log(`Using Xray core for ${server.name} (local SOCKS ${port}${bindInterface ? `, bound to "${bindInterface}"` : ''})`)
+    if (needsRelay(server.xray)) this.log(`${server.name} has no TLS, REALITY or VLESS Encryption: the VPN hop itself is not encrypted`, 'warn')
     return { ...server, outbound: socksOutbound(port) }
   }
 
@@ -423,6 +431,7 @@ export class Core extends EventEmitter {
       this.log(`WARP core stopped unexpectedly (exit code ${code})`, 'error')
       void this.stop().then(() => this.setStatus({ state: 'stopped', error: 'WARP core stopped unexpectedly, see Logs' }))
     })
+    this.wonWarp = won
     this.log(`Free WARP connected with ${warpLabel(won.method)}${won.exit ? `, exit ${won.exit}` : ''}${won.peer ? ` via ${won.peer}` : ''} (local SOCKS ${won.port})`)
     if (won.exit === 'IR') {
       this.log(
@@ -772,6 +781,7 @@ export class Core extends EventEmitter {
 
   private async cleanup(): Promise<void> {
     this.probePort = undefined
+    this.wonWarp = undefined
     if (this.statsTimer) clearInterval(this.statsTimer)
     if (this.healthTimer) clearInterval(this.healthTimer)
     this.statsTimer = this.healthTimer = undefined

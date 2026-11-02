@@ -165,7 +165,12 @@ export interface Settings {
   showInDiscord: boolean
   /** The app's language: English, or Persian (right to left, Yekan Bakh). */
   language: 'en' | 'fa'
+  /** The look of the connect button on the Dashboard. */
+  buttonStyle: ButtonStyle
 }
+
+/** dashboard: a round key with a status light, like a car's dashboard (default). classic: the glowing blue disc of 0.4.6-0.4.8. */
+export type ButtonStyle = 'dashboard' | 'classic'
 
 /** Server id the UI passes to selectServer() to turn on Auto (best ping). */
 export const AUTO_SERVER = 'auto'

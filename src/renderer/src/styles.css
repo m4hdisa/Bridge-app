@@ -185,7 +185,7 @@
 
 /*
  * Windows' "Show animations" off (or any reduced-motion setting): the decorative loops stop and
- * state changes are instant. (The connect button's canvas checks the same setting itself.)
+ * state changes are instant.
  */
 @media (prefers-reduced-motion: reduce) {
   *,

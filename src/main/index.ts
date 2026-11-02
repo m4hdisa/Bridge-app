@@ -64,6 +64,8 @@ const discord = new DiscordPresence((text, level) => core.log(text, level))
 
 /** The app icon, from the public repo, so the activity shows it without uploading it to Discord. */
 const DISCORD_ICON = 'https://raw.githubusercontent.com/m4hdisa/Bridge-app/main/resources/icon.png'
+/** Cloudflare's own icon, shown small over the Bridge icon while on WARP. */
+const CLOUDFLARE_ICON = 'https://www.cloudflare.com/img/favicon/apple-touch-icon.png'
 
 /**
  * What Discord shows while connecting or connected: the server Bridge is on, the mode, where
@@ -77,6 +79,13 @@ function discordActivity(): DiscordActivity | null {
   const name = server ? (isWarp(server) ? 'Free WARP (Cloudflare)' : server.name) : 'a VPN server'
   const mode = { 'per-app': 'Per-App', tun: 'Full VPN', 'system-proxy': 'System Proxy', 'proxy-only': 'Proxy only' }[s.mode ?? 'per-app'] ?? 'VPN'
   const exit = s.exit
+  const warp = !!server && isWarp(server)
+  // On WARP the exit is Cloudflare's network, so its logo stands in for the country flag (as in the app).
+  const badge = warp
+    ? { small_image: CLOUDFLARE_ICON, small_text: exit ? `Cloudflare WARP · Exit in ${exit.country}` : 'Cloudflare WARP' }
+    : exit
+      ? { small_image: `https://flagcdn.com/w80/${exit.countryCode.toLowerCase()}.png`, small_text: exit.city ? `${exit.city}, ${exit.country}` : exit.country }
+      : {}
   return {
     details: s.state === 'starting' ? `Connecting to ${name}` : `Connected to ${name}`,
     state: s.state === 'starting' ? mode : exit ? `${mode} · Exit in ${exit.country}` : mode,
@@ -84,10 +93,35 @@ function discordActivity(): DiscordActivity | null {
     assets: {
       large_image: DISCORD_ICON,
       large_text: `Bridge ${app.getVersion()}`,
-      ...(exit ? { small_image: `https://flagcdn.com/w80/${exit.countryCode.toLowerCase()}.png`, small_text: exit.city ? `${exit.city}, ${exit.country}` : exit.country } : {})
+      ...badge
     },
     buttons: [{ label: 'Get Bridge', url: 'https://github.com/m4hdisa/Bridge-app/releases/latest' }]
   }
+}
+
+/**
+ * Looks up the exit for the connection that started at `startedAt`. A tunnel can be slow for
+ * its first seconds (WARP often is), so it tries again a few times before giving up; on WARP,
+ * the exit country Aether reported is used if every lookup fails.
+ */
+async function findExit(port: number, startedAt: number): Promise<void> {
+  const current = () => core.status.state === 'running' && core.status.startedAt === startedAt
+  for (const wait of [1000, 4000, 10000, 30000]) {
+    await new Promise((r) => setTimeout(r, wait))
+    if (!current()) return
+    const exit = await lookupExit(port)
+    if (!current()) return
+    if (exit) {
+      core.log(`VPN exit: ${exit.ip} (${exit.city ? exit.city + ', ' : ''}${exit.country})`)
+      return core.setExit(exit)
+    }
+  }
+  const code = core.warpExit
+  if (code) {
+    const country = new Intl.DisplayNames(['en'], { type: 'region' }).of(code) || code
+    core.log(`Could not look up the VPN exit location; using the country WARP reported (${country})`, 'warn')
+    core.setExit({ ip: '', countryCode: code, country })
+  } else core.log('Could not look up the VPN exit location', 'warn')
 }
 
 core.on('status', (s) => {
@@ -97,16 +131,7 @@ core.on('status', (s) => {
   watchHealth(s)
   if (s.state === 'running' && s.startedAt && s.startedAt !== exitLookedUpFor && core.probePort) {
     exitLookedUpFor = s.startedAt
-    const port = core.probePort
-    setTimeout(() => {
-      void lookupExit(port).then((exit) => {
-        if (core.status.startedAt !== s.startedAt) return
-        if (exit) {
-          core.log(`VPN exit: ${exit.ip} (${exit.city ? exit.city + ', ' : ''}${exit.country})`)
-          core.setExit(exit)
-        } else core.log('Could not look up the VPN exit location', 'warn')
-      })
-    }, 1000)
+    void findExit(core.probePort, s.startedAt)
   }
 })
 core.on('stats', (s) => send('stats', s))
@@ -492,8 +517,8 @@ handle('removeSubscription', (id: string) => {
 })
 
 handle('updateSettings', async (patch: Partial<Settings>) => {
-  // Auto ping, Auto server, the Discord activity and the language don't change the running connection.
-  const connectionPart = ({ autoPing: _p, autoServer: _a, showInDiscord: _d, language: _l, ...rest }: Settings) => JSON.stringify(rest)
+  // Auto ping, Auto server, the Discord activity, the language and the button's look don't change the running connection.
+  const connectionPart = ({ autoPing: _p, autoServer: _a, showInDiscord: _d, language: _l, buttonStyle: _b, ...rest }: Settings) => JSON.stringify(rest)
   const before = connectionPart(store.state.settings)
   const pingWasOn = store.state.settings.autoPing
   store.update((s) => Object.assign(s.settings, patch))

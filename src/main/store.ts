@@ -15,7 +15,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autoPing: true,
   autoServer: false,
   showInDiscord: true,
-  language: 'en'
+  language: 'en',
+  buttonStyle: 'dashboard'
 }
 
 export class Store {

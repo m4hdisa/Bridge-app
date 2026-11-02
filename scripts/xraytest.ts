@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseLink } from '../src/main/parser'
-import { buildXrayConfig, linkToXray, xrayWithServerIp } from '../src/main/xray'
+import { buildXrayConfig, linkToXray, needsRelay, xrayWithServerIp } from '../src/main/xray'
 
 const root = join(__dirname, '..')
 const xray = join(root, 'resources', 'xray', 'xray.exe')
@@ -57,12 +57,22 @@ for (const [name, link] of Object.entries(SAMPLES)) {
   }
 }
 
-try {
-  parseLink(`vless://${UUID}@de.example.com:80?encryption=none&type=tcp&headerType=http&host=a.com#plain`)
-  fail('plain VLESS + http header should be rejected', 'no error')
-} catch (e) {
-  ok(`plain VLESS + http header rejected: "${(e as Error).message}"`)
+// Plain VLESS (no TLS / REALITY / Encryption) runs on Xray through the local relay.
+const PLAIN = {
+  'plain vless xhttp': `vless://${UUID}@de.example.com:80?encryption=none&security=none&type=xhttp&path=%2F&host=cdn.example.com#plain-xhttp`,
+  'plain vless raw + http header': `vless://${UUID}@8.8.8.8:80?encryption=none&type=tcp&headerType=http&host=a.com#plain-http`
 }
+for (const [name, link] of Object.entries(PLAIN)) {
+  try {
+    const p = parseLink(link)
+    if (p.engine === 'xray' && p.xray && needsRelay(p.xray)) ok(`${name} -> xray, relayed`)
+    else fail(name, `engine=${p.engine}, relay=${p.xray && needsRelay(p.xray)}`)
+  } catch (e) {
+    fail(name, e)
+  }
+}
+if (!needsRelay(linkToXray(SAMPLES['vless ws tls'])) && !needsRelay(linkToXray(SAMPLES['vless raw + VLESS Encryption']))) ok('TLS / Encryption links are not relayed')
+else fail('needsRelay', 'TLS or Encryption link marked for relay')
 
 console.log('Xray configs')
 const outbounds = Object.entries(SAMPLES).map(([name, link]) => ({ name, outbound: linkToXray(link) }))
@@ -73,6 +83,13 @@ const pinned = xrayWithServerIp(outbounds[1].outbound, '1.2.3.4')
 if (pinned.settings.address === '1.2.3.4' && pinned.streamSettings.tlsSettings.serverName === 'cdn.example.com') ok('pinned IP keeps the TLS server name')
 else fail('pinning', JSON.stringify(pinned))
 check('pinned outbound', buildXrayConfig([{ port: 20001, outbound: pinned }]))
+const plainOut = Object.values(PLAIN).map((l) => linkToXray(l))
+check('plain VLESS via relay', buildXrayConfig(plainOut.map((outbound, i) => ({ port: 20001 + i, outbound, relayPort: 20101 + i })), 'warning', 'Wi-Fi'))
+const relayed = buildXrayConfig([{ port: 20001, outbound: plainOut[0], relayPort: 20101 }], 'warning', 'Wi-Fi')
+const [vless, freedom] = relayed.outbounds
+if (vless.settings.address === '127.0.0.1' && !vless.streamSettings.sockopt && vless.streamSettings.xhttpSettings.host === 'cdn.example.com' && freedom.streamSettings.sockopt.interface === 'Wi-Fi' && relayed.inbounds[1].settings.address === 'de.example.com')
+  ok('relay: VLESS dials loopback unbound, the relay is bound and targets the real server')
+else fail('relay layout', JSON.stringify(relayed))
 
 rmSync(dir, { recursive: true, force: true })
 console.log(failed ? `\n${failed} FAILED` : '\nAll passed')

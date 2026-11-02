@@ -26,7 +26,7 @@ export function SettingsPage({ state, update, run }: PageProps) {
       <div className="flex flex-col gap-4">
         <Card>
           <CardHeader>
-            <CardTitle>{t('Language')}</CardTitle>
+            <CardTitle>{t('Appearance')}</CardTitle>
           </CardHeader>
           <CardContent className="divide-y">
             <Row title={t('App language')} description={t('Persian reads right to left. Logs and server names stay as they are.')}>
@@ -37,6 +37,17 @@ export function SettingsPage({ state, update, run }: PageProps) {
                 <SelectContent>
                   <SelectItem value="en">English</SelectItem>
                   <SelectItem value="fa">فارسی</SelectItem>
+                </SelectContent>
+              </Select>
+            </Row>
+            <Row title={t('Connect button')} description={t('Dashboard: a round key with a status light that turns green when connected. Classic: the glowing blue button.')}>
+              <Select value={draft.buttonStyle} onValueChange={(v) => set('buttonStyle', v as Settings['buttonStyle'])}>
+                <SelectTrigger className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="dashboard">{t('Dashboard')}</SelectItem>
+                  <SelectItem value="classic">{t('Classic')}</SelectItem>
                 </SelectContent>
               </Select>
             </Row>

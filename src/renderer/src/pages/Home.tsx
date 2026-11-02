@@ -103,10 +103,10 @@ export function Home({ state, status, stats, run, go }: PageProps) {
           <div className="grid items-center gap-8 @min-[640px]:grid-cols-[20rem_minmax(0,1fr)] @min-[640px]:gap-8">
             <div className="flex min-w-0 flex-col items-center gap-4 text-center">
               <ConnectButton
+                look={state.settings.buttonStyle}
                 state={running ? 'on' : busy ? 'busy' : 'off'}
                 label={running ? t('Disconnect') : status.state === 'starting' ? t('Connecting…') : status.state === 'stopping' ? t('Stopping…') : t('Connect')}
-                disabled={busy || (!running && (!server || needsAdmin))}
-                onClick={() => run(() => (running ? api.disconnect() : api.connect()))}
+                disabled={busy || (!running && (!server || needsAdmin))}                onClick={() => run(() => (running ? api.disconnect() : api.connect()))}
               />
               <div className="flex w-full min-w-0 flex-col items-center gap-4">
                 <div>
@@ -238,14 +238,16 @@ function ConnectionPanel({ status, viaWarp, down, up }: { status: CoreStatus; vi
   return (
     <div className="bg-card/60 w-full max-w-xs overflow-hidden rounded-xl border text-start text-sm shadow-[inset_0_1px_0_oklch(1_0_0/4%)]">
       <div className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5">
-        {exit ? (
+        {exit || viaWarp ? (
           <>
-            {viaWarp ? <CloudflareMark className="h-4 w-6" /> : <Flag code={exit.countryCode} className="h-4 w-6 shrink-0" />}
+            {viaWarp ? <CloudflareMark className="h-4 w-6" /> : <Flag code={exit?.countryCode} className="h-4 w-6 shrink-0" />}
             <div className="min-w-0 flex-1 leading-tight">
-              <div className="truncate font-medium">{viaWarp ? t('Cloudflare WARP') : exit.country}</div>
-              <div className="text-muted-foreground truncate text-xs">{viaWarp ? t('Exit in {country}', { country: exit.country }) : (exit.city ?? t('Exit location'))}</div>
+              <div className="truncate font-medium">{viaWarp ? t('Cloudflare WARP') : exit?.country}</div>
+              <div className="text-muted-foreground truncate text-xs">
+                {exit ? (viaWarp ? t('Exit in {country}', { country: exit.country }) : (exit.city ?? t('Exit location'))) : t('Finding where your traffic exits…')}
+              </div>
             </div>
-            <span className="text-muted-foreground font-mono text-xs">{exit.ip}</span>
+            {exit && <span className="text-muted-foreground font-mono text-xs">{exit.ip}</span>}
           </>
         ) : (
           <>

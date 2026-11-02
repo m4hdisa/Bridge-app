@@ -281,7 +281,8 @@ export function App() {
                   {summary.label}
                 </div>
                 <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
-                  {status.state === 'running' && status.exit && (server?.engine === 'aether' ? <CloudflareMark className="h-3 w-4" /> : <Flag code={status.exit.countryCode} className="h-3 w-4" />)}
+                  {status.state === 'running' &&
+                    (server?.engine === 'aether' ? <CloudflareMark className="h-3 w-4" /> : status.exit && <Flag code={status.exit.countryCode} className="h-3 w-4" />)}
                   <span className="truncate">{server ? server.name : t('No server selected')}</span>
                 </div>
                 {status.state === 'running' && (

@@ -293,7 +293,12 @@ export const fa: Record<string, string> = {
   // Settings
   "Changes reconnect Bridge if it's connected.": 'اگر وصل باشید، تغییرات Bridge را دوباره وصل می‌کند.',
   Language: 'زبان',
+  Appearance: 'ظاهر',
   'App language': 'زبان برنامه',
+  'Connect button': 'دکمه‌ی اتصال',
+  'Dashboard: a round key with a status light that turns green when connected. Classic: the glowing blue button.':
+    'داشبورد: دکمه‌ی گرد با چراغ وضعیت که موقع اتصال سبز می‌شود. کلاسیک: دکمه‌ی آبی درخشان.',
+  Classic: 'کلاسیک',
   'Persian reads right to left. Logs and server names stay as they are.': 'فارسی راست‌به‌چپ نمایش داده می‌شود. لاگ‌ها و اسم سرورها همان‌طور که هستند می‌مانند.',
   Routing: 'مسیریابی',
   'What goes through the VPN besides your app rules.': 'چیزهایی که علاوه بر قوانین برنامه‌ها از VPN رد می‌شوند.',

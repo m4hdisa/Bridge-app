@@ -38,6 +38,7 @@ const SAMPLES: Record<string, string> = {
 
 const settings: Settings = {
   mode: 'tun',
+  buttonStyle: 'dashboard',
   autoPing: false,
   autoServer: false,
   showInDiscord: false,
@@ -114,12 +115,13 @@ for (const [label, link] of [
     fail(label, e)
   }
 }
+// Plain VLESS (no TLS / REALITY / Encryption): Xray runs it through its local relay.
 try {
-  parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:80?encryption=none&type=tcp&headerType=http&host=a.com')
-  fail('plain VLESS + http header should be rejected by both cores', 'no error thrown')
+  const p = parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:80?encryption=none&type=tcp&headerType=http&host=a.com')
+  if (p.engine === 'xray' && p.xray) ok('plain VLESS + http header -> Xray core (relayed)')
+  else fail('plain VLESS + http header', `engine=${p.engine}`)
 } catch (e) {
-  if (/not supported/.test(String(e))) ok(`plain VLESS + http header rejected by both cores with a clear error`)
-  else fail('plain VLESS + http header', e)
+  fail('plain VLESS + http header', e)
 }
 {
   const d = describeLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@x.com:7779?type=xhttp&security=reality#VLESS-REALITY-XHTTP')
