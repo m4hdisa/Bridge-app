@@ -24,10 +24,10 @@ Per-App and Full VPN modes need administrator rights. Bridge offers a "Restart a
   - **Proxy only**: a local SOCKS5/HTTP proxy on `127.0.0.1:2080`, with no system changes.
 - **App rules:** set each app to VPN, Direct, Other VPN (handed to another VPN tool already running, such as a game booster) or Block. Changes apply instantly, without reconnecting.
 - **Subscriptions:** shows traffic left, days left and config count, and updates automatically. When a panel doesn't send usage headers, Bridge reads usage from the config names.
-- **Works next to other VPN tools:** detects other tunnels (WARP, game VPNs such as EZConnect) and keeps out of their way.
+- **Works next to other VPN tools:** the defaults suit a PC with no other VPN or game tool open. When Bridge detects one (WARP, game VPNs such as EZConnect), it keeps its own traffic out of their way, and one click on the Dashboard switches to settings compatible with them.
 - **Iranian sites go direct** (`.ir` and the Iran geoip/geosite lists).
 - **Auto server:** pings every server in the background. **Auto (best ping)** connects to the fastest one and moves to another if it stops responding.
-- **Tools:** a speed test that also shows how much the VPN adapter costs, and an MTU finder for your line.
+- **Tools:** a speed test that also shows how much the VPN adapter costs, and an MTU finder for your line. The speed test contacts Cloudflare (speed.cloudflare.com) only when you start it.
 - **Live status:** what Bridge is doing while it connects, real latency tests, health charts for the VPN and the direct internet, the VPN exit location with its flag, live speed and per-app traffic.
 - **Discord activity:** shows your connection (server, mode, exit country with its flag) on your Discord profile. Your IP address is never shown. Can be turned off in Settings.
 - **English and Persian:** the whole interface, right to left in Persian.
