@@ -217,7 +217,10 @@ export function App() {
           ) : (
             <div className="mb-6 flex items-center gap-2.5 px-2">
               <BridgeLogo className="size-8 drop-shadow-[0_4px_14px_color-mix(in_oklch,var(--primary)_40%,transparent)]" />
-              <div className="min-w-0 flex-1 text-[15px] font-semibold tracking-[-0.02em]">{t('Bridge')}</div>
+              <div className="min-w-0 flex-1 leading-tight">
+                <div className="text-[15px] font-semibold tracking-[-0.02em]">{t('Bridge')}</div>
+                {update.current && <div className="text-muted-foreground tabular text-[11px]" dir="ltr">v{update.current}</div>}
+              </div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button

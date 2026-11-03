@@ -6,7 +6,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, withServerIp, writeAppRuleSets, type ClashApi } from './config'
 import { connect } from 'node:net'
-import { pickDirectDns, ServerResolver } from './resolve'
+import { lookup } from 'node:dns/promises'
+import { networkInterfaces } from 'node:os'
+import { isBogusAddress, pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
 import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, networkInfo, setHostRoutes, setSystemProxy } from './system'
@@ -40,6 +42,34 @@ function portOpen(port: number): Promise<boolean> {
     })
     s.once('error', () => resolve(false))
   })
+}
+
+/**
+ * How long opening a TCP connection takes: one round trip, the same thing ping measures.
+ * localAddress (the real adapter's IP) keeps it off Bridge's TUN, so in Full VPN mode it
+ * still measures the normal internet and not the VPN.
+ */
+function connectTime(ip: string, port: number, localAddress?: string, timeoutMs = 3000): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const started = performance.now()
+    const s = connect({ host: ip, port, localAddress })
+    const timer = setTimeout(() => s.destroy(new Error('timeout')), timeoutMs)
+    s.once('connect', () => {
+      clearTimeout(timer)
+      s.destroy()
+      resolve(Math.max(1, Math.round(performance.now() - started)))
+    })
+    s.once('error', (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+  })
+}
+
+/** The IPv4 address of an adapter, by its Windows name (e.g. "Wi-Fi"). */
+function adapterIpv4(alias?: string): string | undefined {
+  if (!alias) return undefined
+  return networkInterfaces()[alias]?.find((a) => a.family === 'IPv4' && !a.internal)?.address
 }
 
 async function killProcess(child?: ChildProcess): Promise<void> {
@@ -85,11 +115,12 @@ interface WarpWinner {
   readyMs: number
 }
 /**
- * Iranian sites for the Direct internet check (see probeDirect). Plain HTTP on purpose: their
- * CDN answers with a redirect right away, so the time is close to two round trips. Over HTTPS
- * the site builds its whole home page first, which added 100-300 ms that wasn't the network.
+ * Iranian sites for the Direct internet check (see probeDirect). The ping is how long opening
+ * a connection to them takes. A full web request through sing-box also counted DNS-over-HTTPS
+ * to a foreign resolver and the site's own reply, so it showed ~500 ms where ping showed ~8.
  */
-const DIRECT_TEST_URLS = ['http://www.aparat.com/', 'http://www.digikala.com/', 'http://divar.ir/']
+const DIRECT_TEST_HOSTS = ['www.aparat.com', 'www.digikala.com', 'divar.ir']
+const DIRECT_TEST_URLS = DIRECT_TEST_HOSTS.map((h) => `http://${h}/`)
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
 
@@ -585,6 +616,10 @@ export class Core extends EventEmitter {
 
   /** Warned this session that an app got a censored DNS answer (see coreLine). */
   private censoredDnsWarned = false
+  private censoredDnsFlushedAt = 0
+  /** For the Direct internet ping (see probeDirect): the real adapter's IP in TUN modes, and the test sites' IPs. */
+  private directSource?: string
+  private directIps: Record<string, string> = {}
 
   private coreLine = (line: string, isErr: boolean) => {
     const level: LogLine['level'] = /\b(ERROR|FATAL)\b/.test(line) ? 'error' : /\bWARN\b/.test(line) ? 'warn' : isErr ? 'warn' : 'info'
@@ -595,9 +630,16 @@ export class Core extends EventEmitter {
     // connecting there took the answer from the ISP's DNS (Windows asks every adapter's DNS
     // server, and without Strict mode the ISP's reply can win). Such an app can't reach the
     // site even on VPN, because the address itself is wrong.
-    if (!this.censoredDnsWarned && /inbound connection (from \S+ )?to 10\.10\.34\.\d+:/.test(text)) {
-      this.censoredDnsWarned = true
-      this.log('An app got a censored DNS answer from your ISP (10.10.34.x) instead of Bridge, so a blocked site may not open even on VPN. If that happens, turn on Strict mode in Settings.', 'warn')
+    if (/inbound connection (from \S+ )?to 10\.10\.34\.\d+:/.test(text)) {
+      // Clearing Windows' DNS cache makes the app ask again, now through Bridge (at most once a minute).
+      if (Date.now() - this.censoredDnsFlushedAt > 60_000) {
+        this.censoredDnsFlushedAt = Date.now()
+        void flushDns()
+      }
+      if (!this.censoredDnsWarned) {
+        this.censoredDnsWarned = true
+        this.log('An app got a censored DNS answer from your ISP (10.10.34.x) instead of Bridge, so a blocked site may not open even on VPN. Bridge cleared Windows\' DNS cache so it asks again; if it keeps happening, turn on Strict mode in Settings.', 'warn')
+      }
     }
   }
 
@@ -666,6 +708,9 @@ export class Core extends EventEmitter {
       this.api = api
       this.probePort = probePort
       this.child.once('exit', (code) => this.onUnexpectedExit(code))
+      // Apps opened before connecting may have Iran's fake answer (10.10.34.x) for blocked
+      // sites in Windows' DNS cache; drop it so they ask again through Bridge's clean DNS.
+      if (tun) await flushDns()
 
       if (settings.mode === 'system-proxy' && this.paths.manageSystemProxy !== false) {
         await setSystemProxy(settings.mixedPort)
@@ -673,6 +718,8 @@ export class Core extends EventEmitter {
       }
       this.resetStats()
       this.handoffIf = tun ? net.otherInterface : undefined
+      this.directSource = tun ? adapterIpv4(net.interfaceAlias) : undefined
+      this.directIps = {}
       this.statsTimer = setInterval(() => void this.pollStats(), 1000)
       this.setStatus({
         state: 'running',
@@ -720,6 +767,25 @@ export class Core extends EventEmitter {
    * made the check look broken while the connection was fine.
    */
   private async probeDirect(api: ClashApi): Promise<HealthCheck> {
+    const checkedAt = Date.now()
+    const times = await Promise.all(
+      DIRECT_TEST_HOSTS.map(async (host) => {
+        try {
+          const ip = (this.directIps[host] ??= (await lookup(host, { family: 4 })).address)
+          // A FakeIP answer (198.18.x) or Iran's block page (10.10.34.x) isn't the site.
+          if (isBogusAddress(ip)) throw new Error('not a real address')
+          // The first connection can include waking the adapter or the router; take the faster of two.
+          const first = await connectTime(ip, 443, this.directSource)
+          return Math.min(first, await connectTime(ip, 443, this.directSource).catch(() => first))
+        } catch {
+          delete this.directIps[host]
+          return undefined
+        }
+      })
+    )
+    const best = times.filter((t): t is number => t !== undefined).sort((a, b) => a - b)[0]
+    if (best !== undefined) return { ok: true, latency: best, checkedAt }
+    // No plain connection worked (e.g. the adapter's address changed): fall back to a web request through sing-box.
     const checks = await Promise.all(DIRECT_TEST_URLS.map((url) => this.probe(api, 'direct', url)))
     const ok = checks.filter((c) => c.ok).sort((a, b) => a.latency! - b.latency!)
     return ok[0] ?? checks[0]
