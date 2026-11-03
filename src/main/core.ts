@@ -6,9 +6,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, SPEED_TEST_PORTS, withServerIp, writeAppRuleSets, type ClashApi } from './config'
 import { connect } from 'node:net'
-import { lookup } from 'node:dns/promises'
 import { networkInterfaces } from 'node:os'
-import { isBogusAddress, pickDirectDns, ServerResolver } from './resolve'
+import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
 import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, hasInternetIpv6, networkInfo, setHostRoutes, setSystemProxy } from './system'
@@ -674,6 +673,7 @@ export class Core extends EventEmitter {
       this.checkCancelled(gen)
       if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? 'DNS-over-HTTPS' : 'DNS'} ${localDns.server}`)
       else if (tun) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
+      if (tun && settings.strictRoute && localDns?.type !== 'https') this.log('DNS-over-HTTPS is not reachable on this network, so Strict mode stays off for this connection', 'warn')
       // With other tunnels up, pin Bridge's own traffic to the real adapter so it never
       // leaves through (or fights with) another tool's tunnel.
       const defaultInterface = net.bindPhysical ? net.interfaceAlias : undefined
@@ -781,7 +781,8 @@ export class Core extends EventEmitter {
     if (this.status.state !== 'running' || !settings || !probePort) throw new Error('Connect first, then run the speed test')
     const result: SpeedTestResult = { core: { usedBytes: 0 }, serverName: server.name, mode: settings.mode, tunStack: settings.tunStack, tunMtu: settings.tunMtu, at: Date.now() }
     if (usesTun(settings.mode)) {
-      result.adapter = await runPath(adapterDialer(), (phase, mbps) => onProgress('adapter', phase, mbps), () => this.speedTestRoute().catch(() => undefined), signal)
+      const findAddress = async (host: string) => (await this.resolver.resolve(host))?.ip
+      result.adapter = await runPath(adapterDialer(findAddress), (phase, mbps) => onProgress('adapter', phase, mbps), () => this.speedTestRoute().catch(() => undefined), signal)
       this.log(`Speed test through the VPN adapter (stack ${settings.tunStack}, MTU ${settings.tunMtu || 'auto'}): ${speedLine(result.adapter)}`)
     }
     result.core = await runPath(socksDialer(probePort), (phase, mbps) => onProgress('core', phase, mbps), undefined, signal)
@@ -820,9 +821,10 @@ export class Core extends EventEmitter {
     const times = await Promise.all(
       DIRECT_TEST_HOSTS.map(async (host) => {
         try {
-          const ip = (this.directIps[host] ??= (await lookup(host, { family: 4 })).address)
-          // A FakeIP answer (198.18.x) or Iran's block page (10.10.34.x) isn't the site.
-          if (isBogusAddress(ip)) throw new Error('not a real address')
+          // Not Windows' DNS alone: a FakeIP answer (198.18.x) or Iran's block page (10.10.34.x) isn't the site.
+          const found = this.directIps[host] ?? (await this.resolver.resolve(host))?.ip
+          if (!found) throw new Error('no address')
+          const ip = (this.directIps[host] = found)
           // The first connection can include waking the adapter or the router; take the faster of two.
           const first = await connectTime(ip, 443, this.directSource)
           return Math.min(first, await connectTime(ip, 443, this.directSource).catch(() => first))

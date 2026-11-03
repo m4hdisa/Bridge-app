@@ -96,21 +96,21 @@ export function SettingsPage({ state, update, run }: PageProps) {
         <Card>
           <CardHeader>
             <CardTitle>{t('DNS and compatibility')}</CardTitle>
-            <CardDescription>{t('For Per-App and Full VPN. The defaults work best next to other VPN and game tools.')}</CardDescription>
+            <CardDescription>{t('For Per-App and Full VPN. The defaults suit a PC with no other VPN or game tool open. If you use one, like EZConnect, choose Real IPs and turn Strict mode off.')}</CardDescription>
           </CardHeader>
           <CardContent className="divide-y">
-            <Row title={t('DNS mode')} description={t('Real IPs keep tools like EZConnect working. FakeIP is slightly faster but breaks tools that pick traffic by IP.')}>
+            <Row title={t('DNS mode')} description={t('FakeIP answers instantly and lets the VPN server look up sites, but breaks tools that pick traffic by IP. Real IPs keep tools like EZConnect working.')}>
               <Select value={draft.dnsMode} onValueChange={(v) => set('dnsMode', v as Settings['dnsMode'])}>
                 <SelectTrigger className="w-56">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="real">{t('Real IPs (recommended)')}</SelectItem>
-                  <SelectItem value="fakeip">{t('FakeIP')}</SelectItem>
+                  <SelectItem value="fakeip">{t('FakeIP (default)')}</SelectItem>
+                  <SelectItem value="real">{t('Real IPs (for other tools)')}</SelectItem>
                 </SelectContent>
               </Select>
             </Row>
-            <Row title={t('Strict mode')} description={t('Blocks DNS outside Bridge\'s adapter to stop leaks. Can break other VPN or game tools running at the same time.')}>
+            <Row title={t('Strict mode')} description={t('Blocks DNS outside Bridge\'s adapter to stop leaks and censored answers. Turn it off if another VPN or game tool is open.')}>
               <Switch checked={draft.strictRoute} onCheckedChange={(v) => set('strictRoute', v)} />
             </Row>
           </CardContent>

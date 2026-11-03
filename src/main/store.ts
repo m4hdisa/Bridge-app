@@ -9,8 +9,8 @@ export const DEFAULT_SETTINGS: Settings = {
   bypassIran: true,
   mixedPort: 2080,
   testUrl: 'https://www.gstatic.com/generate_204',
-  strictRoute: false,
-  dnsMode: 'real',
+  strictRoute: true,
+  dnsMode: 'fakeip',
   tunStack: 'mixed',
   tunMtu: 0,
   logLevel: 'info',
@@ -18,7 +18,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autoServer: false,
   showInDiscord: true,
   language: 'en',
-  buttonStyle: 'dashboard'
+  buttonStyle: 'dashboard',
+  settingsVersion: 2
 }
 
 export class Store {
@@ -37,6 +38,14 @@ export class Store {
       const settings = { ...DEFAULT_SETTINGS }
       for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
         if (saved.settings?.[key] !== undefined) Object.assign(settings, { [key]: saved.settings[key] })
+      }
+      // Until 0.4.14 the defaults suited a PC with another VPN or game tool open. Settings saved
+      // then mostly hold those old defaults, so they move once to the new ones. Home offers the
+      // way back when such a tool is active.
+      if ((saved.settings?.settingsVersion ?? 1) < 2) {
+        settings.dnsMode = DEFAULT_SETTINGS.dnsMode
+        settings.strictRoute = DEFAULT_SETTINGS.strictRoute
+        settings.settingsVersion = DEFAULT_SETTINGS.settingsVersion
       }
       // The "Via EZConnect" server of the 0.4.7 test builds was removed again.
       const servers = (saved.servers || []).filter((s) => !(s as { otherVpn?: boolean }).otherVpn)

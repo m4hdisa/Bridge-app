@@ -117,12 +117,12 @@ export function writeAppRuleSets(dir: string, rules: AppRule[]): void {
 /**
  * DNS design (TUN modes). Windows resolves names for every app through one service
  * (svchost), so DNS can't be routed per app. TUN hijacks those queries and answers them:
- *  - "real" (default): with real IPs from a clean DNS-over-HTTPS resolver (dns-local,
- *    direct, port 443). No Iranian DNS poisoning, no dependency on the VPN server, and
- *    other tools that pick traffic by IP (game boosters like EZConnect) keep working.
- *  - "fakeip": every A/AAAA query gets an instant fake IP; sing-box maps it back to the
- *    domain when the app connects. Fast, but tools that work by IP see only 198.18.x.x
- *    and break (EZConnect lost Discord this way).
+ *  - "fakeip" (default): every A/AAAA query gets an instant fake IP; sing-box maps it back to
+ *    the domain when the app connects, so the VPN server looks up the site itself. Fast, but
+ *    tools that work by IP see only 198.18.x.x and break (EZConnect lost Discord this way).
+ *  - "real": with real IPs from a clean DNS-over-HTTPS resolver (dns-local, direct, port 443).
+ *    No Iranian DNS poisoning, no dependency on the VPN server, and other tools that pick
+ *    traffic by IP keep working.
  */
 function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
   const local: Json = o.localDns ? { type: o.localDns.type, tag: 'dns-local', server: o.localDns.server } : { type: 'local', tag: 'dns-local' }
@@ -164,7 +164,8 @@ export function buildConfig(o: BuildOptions): Json {
       // (EZConnect / WireSock, WireGuard clients) then still find the real adapter instead of
       // Bridge's gateway-less tunnel; with a 0.0.0.0/0 route they failed to connect.
       route_address: o.noIpv6 ? ['0.0.0.0/1', '128.0.0.0/1'] : ['0.0.0.0/1', '128.0.0.0/1', '::/1', '8000::/1'],
-      strict_route: settings.strictRoute,
+      // Strict mode blocks port 53 outside the adapter, so without DNS-over-HTTPS Direct apps couldn't resolve names.
+      strict_route: settings.strictRoute && o.localDns?.type === 'https',
       stack: settings.tunStack
     })
   }

@@ -11,7 +11,9 @@ import { isNewer } from '../src/shared/version'
 import { handoffCandidates, isPublicIPv4 } from '../src/main/handoff'
 import { hasInternetIpv6 } from '../src/main/system'
 import { findPathMtu, recommendMtu } from '../src/main/mtu'
-import { averageMbps } from '../src/main/speedtest'
+import { adapterDialer, averageMbps } from '../src/main/speedtest'
+import { Store } from '../src/main/store'
+import type { DirectDns } from '../src/main/resolve'
 import type { AppRule, ConnectionMode, ServerProfile, Settings } from '../src/shared/types'
 
 const root = join(__dirname, '..')
@@ -264,6 +266,31 @@ console.log('VPN adapter settings')
   else fail('speed test rule in Proxy only', 'present')
 }
 
+console.log('Defaults (a PC with no other VPN or game tool open)')
+{
+  const file = join(dir, 'state.json')
+  const load = (saved: Partial<Settings>) => {
+    writeFileSync(file, JSON.stringify({ settings: saved }))
+    return new Store(file).state.settings
+  }
+  const fresh = new Store(join(dir, 'missing.json')).state.settings
+  if (fresh.dnsMode === 'fakeip' && fresh.strictRoute) ok('a new install gets FakeIP and Strict mode')
+  else fail('new install', JSON.stringify(fresh))
+  const moved = load({ dnsMode: 'real', strictRoute: false, mixedPort: 3000 })
+  if (moved.dnsMode === 'fakeip' && moved.strictRoute && moved.mixedPort === 3000) ok('older settings move once and keep the rest')
+  else fail('older settings', JSON.stringify(moved))
+  const chosen = load({ dnsMode: 'real', strictRoute: false, settingsVersion: 2 })
+  if (chosen.dnsMode === 'real' && !chosen.strictRoute) ok('a choice made after the move stays')
+  else fail('choice after the move', JSON.stringify(chosen))
+  const strictTun = (localDns?: DirectDns) =>
+    (buildConfig({ server: profiles[0], settings: { ...settings, strictRoute: true }, appRules, clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'apps'), localDns }) as { inbounds: { type: string; strict_route?: boolean }[] }).inbounds.find((i) => i.type === 'tun')?.strict_route
+  if (strictTun({ type: 'https', server: '1.1.1.1' }) === true) ok('Strict mode is on with DNS-over-HTTPS')
+  else fail('Strict with DoH', 'off')
+  if (strictTun({ type: 'udp', server: '192.0.2.1' }) === false && strictTun() === false) ok('Strict mode stays off without DNS-over-HTTPS')
+  else fail('Strict without DoH', 'on')
+  check('FakeIP and Strict mode', buildConfig({ server: profiles[0], settings: { ...settings, dnsMode: 'fakeip', strictRoute: true }, appRules, clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'apps'), localDns: { type: 'https', server: '1.1.1.1' } }))
+}
+
 console.log('Speed test math')
 {
   const samples = [
@@ -293,6 +320,9 @@ console.log('MTU finder')
     ['just above the lowest size', 1201, 1280]
   ]
   void (async () => {
+    const noAddress = await adapterDialer(async () => undefined)().catch((e: Error) => e.message)
+    if (noAddress === 'Could not find the test server\'s address') ok('the speed test says so when it finds no address')
+    else fail('speed test without an address', JSON.stringify(noAddress))
     for (const [label, mtu, want] of cases) {
       const r = await findPathMtu(['192.0.2.1'], undefined, network(mtu))
       if (r.pathMtu === mtu && r.recommended === want) ok(`${label}: ${r.pathMtu} -> ${r.recommended ?? 'keep'}`)

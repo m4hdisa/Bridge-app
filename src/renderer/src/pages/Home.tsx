@@ -206,7 +206,13 @@ export function Home({ state, status, stats, run, go }: PageProps) {
 
         {status.state === 'stopped' && status.error && <ConnectError error={status.error} onRetry={() => run(() => api.connect())} onLogs={() => go('logs')} />}
 
-        {running && status.otherTunnels?.length ? <OtherTunnelsAlert tunnels={status.otherTunnels} /> : null}
+        {running && status.otherTunnels?.length ? (
+          <OtherTunnelsAlert
+            tunnels={status.otherTunnels}
+            compatible={state.settings.dnsMode === 'real' && !state.settings.strictRoute}
+            onCompatible={() => void run(() => api.updateSettings({ dnsMode: 'real', strictRoute: false }), () => t('Settings saved'))}
+          />
+        ) : null}
 
         <HealthCard status={status} run={run} />
 
@@ -299,21 +305,25 @@ function ConnectError({ error, onRetry, onLogs }: { error: string; onRetry: () =
 
 const DISMISSED_TUNNELS_KEY = 'bridge.dismissedTunnels'
 
-/** The "another VPN is active" note. Closing it hides it until a different set of tools is active. */
-function OtherTunnelsAlert({ tunnels }: { tunnels: string[] }) {
+/**
+ * The "another VPN is active" note. Closing it hides it until a different set of tools is active,
+ * or until Bridge's settings stop being the compatible ones, which it then offers to bring back.
+ */
+function OtherTunnelsAlert({ tunnels, compatible, onCompatible }: { tunnels: string[]; compatible: boolean; onCompatible: () => void }) {
   const key = tunnels.join(', ')
-  const [dismissed, setDismissed] = useState(() => {
+  const closedAs = compatible ? key : `${key} | not compatible`
+  const [closed, setClosed] = useState(() => {
     try {
-      return localStorage.getItem(DISMISSED_TUNNELS_KEY) === key
+      return localStorage.getItem(DISMISSED_TUNNELS_KEY)
     } catch {
-      return false
+      return null
     }
   })
-  if (dismissed) return null
+  if (closed === closedAs) return null
   const close = () => {
-    setDismissed(true)
+    setClosed(closedAs)
     try {
-      localStorage.setItem(DISMISSED_TUNNELS_KEY, key)
+      localStorage.setItem(DISMISSED_TUNNELS_KEY, closedAs)
     } catch {
       // Hidden for now; it comes back next time.
     }
@@ -324,6 +334,14 @@ function OtherTunnelsAlert({ tunnels }: { tunnels: string[] }) {
       <AlertTitle>{t('Another VPN or game tool is active')}</AlertTitle>
       <AlertDescription>
         {t('{tools}. Bridge keeps its own traffic on your real adapter. Set apps that tool should carry (e.g. Discord for EZConnect) to “Other VPN” on the Apps page.', { tools: key })}
+        {!compatible && (
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <span>{t('Bridge\'s defaults can break tools like this. If it misbehaves, switch to the compatible settings; Bridge reconnects.')}</span>
+            <Button variant="outline" size="sm" onClick={onCompatible}>
+              {t('Use compatible settings')}
+            </Button>
+          </div>
+        )}
       </AlertDescription>
       <button
         onClick={close}

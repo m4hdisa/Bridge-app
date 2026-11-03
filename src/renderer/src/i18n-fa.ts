@@ -97,6 +97,9 @@ export const fa: Record<string, string> = {
   '{tools}. Bridge keeps its own traffic on your real adapter. Set apps that tool should carry (e.g. Discord for EZConnect) to “Other VPN” on the Apps page.':
     '{tools}. Bridge ترافیک خودش را روی کارت شبکه‌ی واقعی نگه می‌دارد. برنامه‌هایی را که آن ابزار باید منتقل کند (مثلاً Discord برای EZConnect) در صفحه‌ی «برنامه‌ها» روی «VPN دیگر» بگذارید.',
 
+  'Bridge\'s defaults can break tools like this. If it misbehaves, switch to the compatible settings; Bridge reconnects.': 'تنظیمات پیش‌فرض Bridge ممکن است چنین ابزارهایی را خراب کند. اگر مشکل داشت، به تنظیمات سازگار بروید؛ Bridge دوباره وصل می‌شود.',
+  'Use compatible settings': 'تنظیمات سازگار',
+
   // Connection health
   'Connection health': 'سلامت اتصال',
   'A real request every {n} seconds, through the VPN and around it.': 'هر {n} ثانیه یک درخواست واقعی، هم از طریق VPN و هم بدون آن.',
@@ -313,13 +316,13 @@ export const fa: Record<string, string> = {
   'Ping servers automatically': 'پینگ خودکار سرورها',
   'Tests every server when Bridge starts, after subscription updates and every 10 minutes. Uses a little traffic on each server.': 'همه‌ی سرورها را موقع اجرای Bridge، بعد از به‌روزرسانی اشتراک‌ها و هر 10 دقیقه تست می‌کند. روی هر سرور کمی حجم مصرف می‌شود.',
   'DNS and compatibility': 'DNS و سازگاری',
-  'For Per-App and Full VPN. The defaults work best next to other VPN and game tools.': 'برای حالت‌های «برنامه‌محور» و «VPN کامل». تنظیمات پیش‌فرض کنار VPNها و ابزارهای بازی دیگر بهترین کارکرد را دارند.',
+  'For Per-App and Full VPN. The defaults suit a PC with no other VPN or game tool open. If you use one, like EZConnect, choose Real IPs and turn Strict mode off.': 'برای حالت‌های «برنامه‌محور» و «VPN کامل». تنظیمات پیش‌فرض برای کامپیوتری است که VPN یا ابزار بازی دیگری باز ندارد. اگر از ابزاری مثل EZConnect استفاده می‌کنید، «آی‌پی واقعی» را انتخاب کنید و حالت سخت‌گیرانه را خاموش کنید.',
   'DNS mode': 'حالت DNS',
-  'Real IPs keep tools like EZConnect working. FakeIP is slightly faster but breaks tools that pick traffic by IP.': 'آی‌پی‌های واقعی ابزارهایی مثل EZConnect را سالم نگه می‌دارند. FakeIP کمی سریع‌تر است ولی ابزارهایی را که ترافیک را با IP تشخیص می‌دهند خراب می‌کند.',
-  'Real IPs (recommended)': 'آی‌پی واقعی (پیشنهادی)',
-  FakeIP: 'FakeIP',
+  'FakeIP answers instantly and lets the VPN server look up sites, but breaks tools that pick traffic by IP. Real IPs keep tools like EZConnect working.': 'FakeIP فوری جواب می‌دهد و پیدا کردن آدرس سایت‌ها را به سرور VPN می‌سپارد، ولی ابزارهایی را که ترافیک را با IP تشخیص می‌دهند خراب می‌کند. آی‌پی واقعی ابزارهایی مثل EZConnect را سالم نگه می‌دارد.',
+  'FakeIP (default)': 'FakeIP (پیش‌فرض)',
+  'Real IPs (for other tools)': 'آی‌پی واقعی (برای ابزارهای دیگر)',
   'Strict mode': 'حالت سخت‌گیرانه',
-  "Blocks DNS outside Bridge's adapter to stop leaks. Can break other VPN or game tools running at the same time.": 'DNS بیرون از آداپتور Bridge را می‌بندد تا نشتی نباشد. ممکن است VPNها یا ابزارهای بازی‌ای را که هم‌زمان اجرا می‌شوند خراب کند.',
+  "Blocks DNS outside Bridge's adapter to stop leaks and censored answers. Turn it off if another VPN or game tool is open.": 'DNS بیرون از آداپتور Bridge را می‌بندد تا نشتی و جواب‌های فیلترشده نباشد. اگر VPN یا ابزار بازی دیگری باز است، خاموشش کنید.',
   'Local proxy': 'پروکسی محلی',
   'SOCKS5 and HTTP on 127.0.0.1, available in every mode.': 'SOCKS5 و HTTP روی 127.0.0.1، در همه‌ی حالت‌ها در دسترس.',
   Port: 'پورت',
@@ -392,6 +395,7 @@ export const fa: Record<string, string> = {
   'Empty is automatic (9000), which suits most networks. Find MTU on the Tools page measures your line. Allowed: 1280 to 9000.': 'خالی یعنی خودکار (۹۰۰۰) که برای بیشتر شبکه‌ها مناسب است. «پیدا کردن MTU» در صفحه‌ی ابزارها خط شما را اندازه می‌گیرد. مقدار مجاز: ۱۲۸۰ تا ۹۰۰۰.',
   'Automatic': 'خودکار',
   'The test server did not answer': 'سرور تست جواب نداد',
+  'Could not find the test server\'s address': 'آدرس سرور تست پیدا نشد',
   'The test did not go through the VPN adapter, so another tool may be routing this traffic': 'تست از مسیر آداپتر VPN نرفت؛ شاید ابزار دیگری این ترافیک را مسیریابی می‌کند',
   'The test did not leave through the VPN server': 'تست از سرور VPN خارج نشد',
   'No test address answered ping on this network, so the MTU can\'t be measured. Disconnect the VPN and try again.': 'هیچ آدرس تستی در این شبکه به ping جواب نداد، پس MTU اندازه‌گیری نشد. VPN را قطع کنید و دوباره امتحان کنید.',

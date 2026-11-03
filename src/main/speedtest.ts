@@ -2,11 +2,9 @@
 // several connections at once, ignoring the first moments while they speed up. It can reach
 // the server two ways (see SpeedPath), and the difference shows what the VPN adapter costs.
 import { randomBytes } from 'node:crypto'
-import { lookup } from 'node:dns/promises'
 import { connect as tcpConnect, type Socket } from 'node:net'
 import { connect as tlsConnect } from 'node:tls'
 import { SPEED_TEST_PORTS } from './config'
-import { isBogusAddress } from './resolve'
 import type { SpeedResult } from '../shared/types'
 
 const HOST = 'speed.cloudflare.com'
@@ -85,15 +83,18 @@ export function socksDialer(port: number, host = HOST): Dialer {
 
 let nextPort = SPEED_TEST_PORTS.first + Math.floor(Math.random() * (SPEED_TEST_PORTS.last - SPEED_TEST_PORTS.first))
 
-/** Like an app, through the VPN adapter: sing-box sends connections from these source ports to the VPN. */
-export function adapterDialer(): Dialer {
-  let ip: string | undefined
+/**
+ * Like an app, through the VPN adapter: sing-box sends connections from these source ports to the
+ * VPN. `findAddress` must not depend on Windows' DNS, which in FakeIP mode (or from another tool)
+ * answers with an address that means nothing outside that tool.
+ */
+export function adapterDialer(findAddress: (host: string) => Promise<string | undefined>): Dialer {
+  let address: Promise<string | undefined> | undefined
   return async () => {
-    if (!ip) {
-      const found = await lookup(HOST, { family: 4 })
-      if (isBogusAddress(found.address)) throw new Error(`Windows got a censored address for ${HOST} (${found.address})`)
-      ip = found.address
-    }
+    // Several connections start at once; they share one lookup.
+    address ??= findAddress(HOST)
+    const ip = await address
+    if (!ip) throw new Error('Could not find the test server\'s address')
     for (let tries = 0; ; tries++) {
       nextPort = nextPort >= SPEED_TEST_PORTS.last ? SPEED_TEST_PORTS.first : nextPort + 1
       try {

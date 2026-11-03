@@ -139,15 +139,15 @@ export interface Settings {
   /** URL used for real latency tests. */
   testUrl: string
   /**
-   * sing-box strict_route: blocks DNS outside the TUN adapter (stops DNS leaks) but also
-   * breaks other VPN / game tools running alongside Bridge. Off by default.
+   * sing-box strict_route: blocks DNS outside the TUN adapter (stops DNS leaks and censored
+   * answers) but also breaks other VPN / game tools running alongside Bridge. On by default.
    */
   strictRoute: boolean
   /**
    * How names are answered in TUN modes.
-   * real:   real IPs from a clean DNS-over-HTTPS resolver. Other tools that work by IP
-   *         (game boosters like EZConnect, WARP split tunnels) keep working. Default.
-   * fakeip: instant fake IPs (198.18.x.x); slightly faster, but breaks such tools.
+   * fakeip: instant fake IPs (198.18.x.x), and the VPN server looks up the sites of VPN apps.
+   *         Breaks tools that work by IP (game boosters like EZConnect). Default.
+   * real:   real IPs from a clean DNS-over-HTTPS resolver. Those tools keep working.
    */
   dnsMode: 'real' | 'fakeip'
   /** How the VPN adapter turns packets into connections. See TunStack. */
@@ -171,6 +171,8 @@ export interface Settings {
   language: 'en' | 'fa'
   /** The look of the connect button on the Dashboard. */
   buttonStyle: ButtonStyle
+  /** Which defaults the saved settings have been moved to (see Store.load). */
+  settingsVersion?: number
 }
 
 /** sing-box's TUN stacks. mixed: Windows' own TCP with gVisor's UDP (default). system: Windows' own for both. gvisor: gVisor for both. */
