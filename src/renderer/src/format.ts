@@ -24,6 +24,11 @@ function rawBytes(n: number): string {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`
 }
 
+/** Megabits per second, as speed tests show it. */
+export function mbps(v: number): string {
+  return ltr(`${v.toFixed(v < 10 ? 1 : 0)} Mbps`)
+}
+
 export function speed(n: number): string {
   return ltr(`${rawBytes(n)}/s`)
 }

@@ -27,6 +27,7 @@ Per-App and Full VPN modes need administrator rights. Bridge offers a "Restart a
 - **Works next to other VPN tools:** detects other tunnels (WARP, game VPNs such as EZConnect) and keeps out of their way.
 - **Iranian sites go direct** (`.ir` and the Iran geoip/geosite lists).
 - **Auto server:** pings every server in the background. **Auto (best ping)** connects to the fastest one and moves to another if it stops responding.
+- **Tools:** a speed test that also shows how much the VPN adapter costs, and an MTU finder for your line.
 - **Live status:** what Bridge is doing while it connects, real latency tests, health charts for the VPN and the direct internet, the VPN exit location with its flag, live speed and per-app traffic.
 - **Discord activity:** shows your connection (server, mode, exit country with its flag) on your Discord profile. Your IP address is never shown. Can be turned off in Settings.
 - **English and Persian:** the whole interface, right to left in Persian.

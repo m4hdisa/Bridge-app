@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Download, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
-import { AppWindow, GearSix, GlobeHemisphereWest, Scroll, SquaresFour, type Icon as PhosphorIcon } from '@phosphor-icons/react'
+import { AppWindow, GearSix, Gauge, GlobeHemisphereWest, Scroll, SquaresFour, type Icon as PhosphorIcon } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 import type { AppState, CoreStatus, LogLine, TrafficStats, UpdateStatus } from '../../shared/types'
 import { errorMessage, speed } from './format'
@@ -15,11 +15,12 @@ import { Home } from './pages/Home'
 import { Servers } from './pages/Servers'
 import { Apps } from './pages/Apps'
 import { Logs } from './pages/Logs'
+import { Tools } from './pages/Tools'
 import { SettingsPage } from './pages/Settings'
 
 export const api = window.bridge
 
-export type Page = 'home' | 'servers' | 'apps' | 'logs' | 'settings'
+export type Page = 'home' | 'servers' | 'apps' | 'tools' | 'logs' | 'settings'
 
 export interface PageProps {
   state: AppState
@@ -40,6 +41,7 @@ const NAV: { id: Page; label: string; icon: PhosphorIcon }[] = [
   { id: 'home', label: 'Dashboard', icon: SquaresFour },
   { id: 'servers', label: 'Servers', icon: GlobeHemisphereWest },
   { id: 'apps', label: 'Apps', icon: AppWindow },
+  { id: 'tools', label: 'Tools', icon: Gauge },
   { id: 'logs', label: 'Logs', icon: Scroll },
   { id: 'settings', label: 'Settings', icon: GearSix }
 ]
@@ -311,6 +313,7 @@ export function App() {
             {page === 'servers' && <Servers {...props} />}
             {page === 'apps' && <Apps {...props} />}
             {page === 'logs' && <Logs {...props} />}
+            {page === 'tools' && <Tools {...props} />}
             {page === 'settings' && <SettingsPage {...props} />}
           </div>
         </main>

@@ -150,6 +150,10 @@ export interface Settings {
    * fakeip: instant fake IPs (198.18.x.x); slightly faster, but breaks such tools.
    */
   dnsMode: 'real' | 'fakeip'
+  /** How the VPN adapter turns packets into connections. See TunStack. */
+  tunStack: TunStack
+  /** The VPN adapter's MTU. 0 is automatic (9000, the fastest for most servers). */
+  tunMtu: number
   logLevel: 'debug' | 'info' | 'warn' | 'error'
   /** Ping every server on its own: at startup, after subscription updates and every 10 minutes. */
   autoPing: boolean
@@ -168,6 +172,9 @@ export interface Settings {
   /** The look of the connect button on the Dashboard. */
   buttonStyle: ButtonStyle
 }
+
+/** sing-box's TUN stacks. mixed: Windows' own TCP with gVisor's UDP (default). system: Windows' own for both. gvisor: gVisor for both. */
+export type TunStack = 'mixed' | 'system' | 'gvisor'
 
 /** dashboard: a round key with a status light, like a car's dashboard (default). classic: the glowing blue disc of 0.4.6-0.4.8. */
 export type ButtonStyle = 'dashboard' | 'classic'
@@ -284,6 +291,47 @@ export interface UpdateStatus {
   error?: string
 }
 
+/** The two ways the speed test reaches the VPN server. adapter: like an app, through the VPN adapter. core: straight into sing-box, skipping the adapter. */
+export type SpeedPath = 'adapter' | 'core'
+
+export interface SpeedResult {
+  /** Megabits per second; missing if that direction could not be measured. */
+  downMbps?: number
+  upMbps?: number
+  usedBytes: number
+  error?: string
+}
+
+export interface SpeedTestResult {
+  /** Only in Per-App and Full VPN: Proxy only has no adapter. */
+  adapter?: SpeedResult
+  core: SpeedResult
+  serverName: string
+  mode: ConnectionMode
+  tunStack: TunStack
+  tunMtu: number
+  at: number
+}
+
+export interface SpeedTestStatus {
+  running: boolean
+  /** What is being measured right now. */
+  path?: SpeedPath
+  phase?: 'download' | 'upload'
+  /** Megabits per second, right now. */
+  mbps?: number
+  result?: SpeedTestResult
+  error?: string
+}
+
+export interface MtuResult {
+  /** The largest packet that reaches the target without being split, in bytes. */
+  pathMtu: number
+  target: string
+  /** The adapter MTU to use; missing when the path carries full-size packets and nothing needs changing. */
+  recommended?: number
+}
+
 export interface BridgeApi {
   getState(): Promise<AppState>
   getStatus(): Promise<CoreStatus>
@@ -317,6 +365,14 @@ export interface BridgeApi {
   disconnect(): Promise<void>
   /** Re-checks server and internet health now (result arrives through onStatus). */
   checkHealth(): Promise<void>
+
+  getSpeedTest(): Promise<SpeedTestStatus>
+  /** Measures the connected server's speed; progress and the result arrive through onSpeedTest. */
+  runSpeedTest(): Promise<void>
+  stopSpeedTest(): Promise<void>
+  onSpeedTest(cb: (status: SpeedTestStatus) => void): () => void
+  /** Finds the largest packet this network carries. */
+  findMtu(): Promise<MtuResult>
 
   isAdmin(): Promise<boolean>
   relaunchAsAdmin(): Promise<void>

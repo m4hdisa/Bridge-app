@@ -37,9 +37,22 @@ export interface BuildOptions {
    * rules. Bridge uses it for its own checks (e.g. looking up the VPN's exit location).
    */
   probePort?: number
+  /**
+   * Leave IPv6 off the TUN adapter because this network has none. With it on, Windows and apps
+   * believe IPv6 works and try it first, but Direct and "Other VPN" traffic can't leave over
+   * IPv6 here, so those connections fail (Discord's voice never got past this next to EZConnect).
+   */
+  noIpv6?: boolean
 }
 
 type Json = Record<string, unknown>
+
+/**
+ * Source ports the speed test uses to go through the VPN adapter like an app would. They are
+ * below Windows' range for normal outgoing connections (49152 and up), so no app gets them.
+ */
+export const SPEED_TEST_PORTS = { first: 45800, last: 45899 }
+const DEFAULT_TUN_MTU = 9000
 
 const APP_ACTIONS: AppAction[] = ['block', 'direct', 'other', 'proxy']
 /** A regex no exe path can match, so an empty rule-set file is still valid. */
@@ -142,17 +155,17 @@ export function buildConfig(o: BuildOptions): Json {
       type: 'tun',
       tag: 'tun-in',
       interface_name: 'Bridge',
-      address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-      mtu: 9000,
+      address: o.noIpv6 ? ['172.19.0.1/30'] : ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
+      mtu: settings.tunMtu >= 1280 && settings.tunMtu <= DEFAULT_TUN_MTU ? settings.tunMtu : DEFAULT_TUN_MTU,
       auto_route: true,
       // Two half routes instead of a default route (OpenVPN's "def1" trick): they are more
       // specific, so all traffic still enters the TUN, but Windows' real default route stays
       // on Wi-Fi / Ethernet. Tools that look up "the" default route to find the internet
       // (EZConnect / WireSock, WireGuard clients) then still find the real adapter instead of
       // Bridge's gateway-less tunnel; with a 0.0.0.0/0 route they failed to connect.
-      route_address: ['0.0.0.0/1', '128.0.0.0/1', '::/1', '8000::/1'],
+      route_address: o.noIpv6 ? ['0.0.0.0/1', '128.0.0.0/1'] : ['0.0.0.0/1', '128.0.0.0/1', '::/1', '8000::/1'],
       strict_route: settings.strictRoute,
-      stack: 'mixed'
+      stack: settings.tunStack
     })
   }
 
@@ -160,6 +173,7 @@ export function buildConfig(o: BuildOptions): Json {
     { action: 'sniff' },
     { protocol: 'dns', action: 'hijack-dns' },
     ...(o.probePort ? [{ inbound: ['probe-in'], outbound: 'proxy' }] : []),
+    ...(useTun ? [{ inbound: ['tun-in'], source_port_range: [`${SPEED_TEST_PORTS.first}:${SPEED_TEST_PORTS.last}`], outbound: 'proxy' }] : []),
     { ip_is_private: true, outbound: 'direct' }
   ]
   if (o.bypassProcesses?.length) routeRules.push({ process_path_regex: o.bypassProcesses.map(processPathRegex), outbound: 'direct' })

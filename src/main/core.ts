@@ -4,17 +4,19 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, withServerIp, writeAppRuleSets, type ClashApi } from './config'
+import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, SPEED_TEST_PORTS, withServerIp, writeAppRuleSets, type ClashApi } from './config'
 import { connect } from 'node:net'
 import { lookup } from 'node:dns/promises'
 import { networkInterfaces } from 'node:os'
 import { isBogusAddress, pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
 import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
-import { clearSystemProxy, flushDns, freePort, networkInfo, setHostRoutes, setSystemProxy } from './system'
+import { clearSystemProxy, flushDns, freePort, hasInternetIpv6, networkInfo, setHostRoutes, setSystemProxy } from './system'
 import { handoffCandidates } from './handoff'
+import { findPathMtu, MTU_TARGETS } from './mtu'
+import { adapterDialer, runPath, socksDialer } from './speedtest'
 import { HEALTH_INTERVAL_MS, usesTun } from '../shared/types'
-import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, ServerProfile, Settings, TrafficStats, WarpFound, WarpMethod } from '../shared/types'
+import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, MtuResult, ServerProfile, Settings, SpeedPath, SpeedResult, SpeedTestResult, TrafficStats, WarpFound, WarpMethod } from '../shared/types'
 
 export interface CorePaths {
   singBox: string
@@ -86,8 +88,11 @@ interface ClashConnection {
   upload: number
   download: number
   chains?: string[]
-  metadata: { processPath?: string; network?: string; destinationIP?: string }
+  metadata: { processPath?: string; network?: string; destinationIP?: string; sourcePort?: string }
 }
+
+const mbpsText = (v?: number) => (v === undefined ? '-' : v.toFixed(1))
+const speedLine = (r: SpeedResult) => `down ${mbpsText(r.downMbps)} Mbps, up ${mbpsText(r.upMbps)} Mbps, ${Math.round(r.usedBytes / 1e6)} MB used${r.error ? ` (${r.error})` : ''}`
 
 /** Thrown when the user disconnects while Bridge is still connecting. */
 class Cancelled extends Error {
@@ -676,7 +681,11 @@ export class Core extends EventEmitter {
       if (defaultInterface) this.log(`Bridge traffic is bound to "${defaultInterface}" to stay out of other tunnels`)
       if (net.otherInterface) this.log(`Apps set to "Other VPN" go through "${net.otherInterface}"`)
       else if (appRules.some((r) => r.enabled && r.action === 'other')) this.log('No other VPN adapter found; apps set to "Other VPN" go direct', 'warn')
+      const noIpv6 = tun && !hasInternetIpv6(net.interfaceAlias)
+      if (noIpv6) this.log('This network has no IPv6, so the VPN adapter is IPv4 only')
+      else if (tun) this.log(`"${net.interfaceAlias ?? 'A network adapter'}" has IPv6, so the VPN adapter keeps IPv6 too`)
       const config = buildConfig({
+        noIpv6,
         server: pinned,
         settings,
         appRules,
@@ -747,6 +756,46 @@ export class Core extends EventEmitter {
       this.setStatus({ state: 'stopped', error: msg })
       throw e
     }
+  }
+
+  /**
+   * The test's connections really must take the VPN adapter and leave through the VPN, or the
+   * number would be about something else. They show in sing-box's list by their source port.
+   */
+  private async speedTestRoute(): Promise<string | undefined> {
+    const api = this.api
+    if (!api) return 'Disconnected during the test'
+    const snap = await clashGet<{ connections: ClashConnection[] | null }>(api, '/connections')
+    const ours = (snap.connections || []).filter((c) => {
+      const port = Number(c.metadata.sourcePort)
+      return port >= SPEED_TEST_PORTS.first && port <= SPEED_TEST_PORTS.last
+    })
+    if (!ours.length) return 'The test did not go through the VPN adapter, so another tool may be routing this traffic'
+    return ours.every((c) => c.chains?.includes('proxy')) ? undefined : 'The test did not leave through the VPN server'
+  }
+
+  /** Measures the running server: first the way apps reach it (TUN modes), then skipping the adapter. */
+  async speedTest(server: ServerProfile, onProgress: (path: SpeedPath, phase: 'download' | 'upload', mbps: number) => void, signal: AbortSignal): Promise<SpeedTestResult> {
+    const settings = this.settings
+    const probePort = this.probePort
+    if (this.status.state !== 'running' || !settings || !probePort) throw new Error('Connect first, then run the speed test')
+    const result: SpeedTestResult = { core: { usedBytes: 0 }, serverName: server.name, mode: settings.mode, tunStack: settings.tunStack, tunMtu: settings.tunMtu, at: Date.now() }
+    if (usesTun(settings.mode)) {
+      result.adapter = await runPath(adapterDialer(), (phase, mbps) => onProgress('adapter', phase, mbps), () => this.speedTestRoute().catch(() => undefined), signal)
+      this.log(`Speed test through the VPN adapter (stack ${settings.tunStack}, MTU ${settings.tunMtu || 'auto'}): ${speedLine(result.adapter)}`)
+    }
+    result.core = await runPath(socksDialer(probePort), (phase, mbps) => onProgress('core', phase, mbps), undefined, signal)
+    this.log(`Speed test skipping the adapter: ${speedLine(result.core)}`)
+    return result
+  }
+
+  /** Finds the largest packet the network carries, toward the VPN server if it answers ping. */
+  async findMtu(server?: ServerProfile): Promise<MtuResult> {
+    const ip = server && !isWarp(server) ? (await this.resolver.resolve(server.server).catch(() => undefined))?.ip : undefined
+    const running = this.status.state === 'running' && !!this.settings && usesTun(this.settings.mode)
+    const result = await findPathMtu(ip ? [ip, ...MTU_TARGETS] : MTU_TARGETS, running ? this.directSource : undefined)
+    this.log(`Largest packet on this network: ${result.pathMtu} bytes (tested against ${result.target === ip ? 'the VPN server' : result.target})`)
+    return result
   }
 
   /** Runs a real request through one outbound ("proxy" = VPN server, "direct" = normal internet). */

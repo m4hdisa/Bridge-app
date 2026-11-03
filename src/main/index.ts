@@ -11,7 +11,7 @@ import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } f
 import { checkForUpdate, downloadInstaller, runInstaller } from './updater'
 import { isWarp, isWarpConfig, newWarpConfig, newWarpServer } from './warp'
 import { AUTO_SERVER, usesTun } from '../shared/types'
-import type { AppRule, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, UpdateStatus, WarpOptions } from '../shared/types'
+import type { AppRule, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, SpeedTestStatus, UpdateStatus, WarpOptions } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
 
@@ -36,6 +36,12 @@ function send(channel: string, payload: unknown): void {
 
 /** Servers being pinged right now, so their latency shows a loading animation. */
 const pinging = new Set<string>()
+let speedTest: SpeedTestStatus = { running: false }
+let speedAbort: AbortController | undefined
+function setSpeedTest(s: SpeedTestStatus): void {
+  speedTest = s
+  send('speedTest', s)
+}
 
 function pushState(): void {
   send('state', { ...store.state, pinging: [...pinging] })
@@ -564,6 +570,24 @@ handle('openUpdatePage', () => shell.openExternal(update.update?.pageUrl ?? RELE
 handle('connect', () => connect())
 handle('disconnect', () => core.stop())
 handle('checkHealth', () => core.checkHealth())
+handle('getSpeedTest', () => speedTest)
+handle('runSpeedTest', async () => {
+  if (speedTest.running) return
+  const server = store.state.servers.find((s) => s.id === core.status.serverId)
+  if (core.status.state !== 'running' || !server) throw new Error('Connect first, then run the speed test')
+  speedAbort = new AbortController()
+  const previous = speedTest.result
+  setSpeedTest({ running: true, result: previous })
+  try {
+    const result = await core.speedTest(server, (path, phase, mbps) => setSpeedTest({ running: true, result: previous, path, phase, mbps }), speedAbort.signal)
+    setSpeedTest({ running: false, result })
+  } catch (e) {
+    const stopped = speedAbort.signal.aborted
+    setSpeedTest({ running: false, result: previous, error: stopped ? undefined : e instanceof Error ? e.message : String(e) })
+  }
+})
+handle('stopSpeedTest', () => speedAbort?.abort())
+handle('findMtu', () => core.findMtu(store.state.servers.find((s) => s.id === (core.status.serverId ?? store.state.selectedServerId))))
 handle('isAdmin', () => isAdmin())
 handle('relaunchAsAdmin', async () => {
   await core.stop()

@@ -1,6 +1,6 @@
 // Fake backend so the UI can run in a normal browser (npm run dev:ui).
 // Nothing here touches the network or the system.
-import type { AppState, BridgeApi, CoreStatus, LogLine, TrafficStats, UpdateStatus } from '../../shared/types'
+import type { AppState, BridgeApi, CoreStatus, LogLine, SpeedTestStatus, TrafficStats, UpdateStatus } from '../../shared/types'
 
 type Listener<T> = (v: T) => void
 
@@ -33,7 +33,7 @@ export function createMockBridge(): BridgeApi {
       { id: 'r2', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
       { id: 'r3', name: 'steam.exe', path: 'C:\\Program Files (x86)\\Steam\\steam.exe', action: 'direct', enabled: false }
     ],
-    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info', autoPing: true, autoServer: false, showInDiscord: true, language: 'en', buttonStyle: 'dashboard' }
+    settings: { mode: 'per-app', bypassIran: true, mixedPort: 2080, strictRoute: false, dnsMode: 'real', tunStack: 'mixed', tunMtu: 0, testUrl: 'https://www.gstatic.com/generate_204', logLevel: 'info', autoPing: true, autoServer: false, showInDiscord: true, language: 'en', buttonStyle: 'dashboard' }
   }
   let status: CoreStatus = { state: 'stopped' }
   const logs: LogLine[] = [{ time: Date.now(), level: 'info', text: 'Mock backend: running in the browser, nothing is real.' }]
@@ -51,6 +51,9 @@ export function createMockBridge(): BridgeApi {
   }
   let timer: ReturnType<typeof setInterval> | undefined
   let total = { up: 0, down: 0 }
+  let speedTest: SpeedTestStatus = { running: false }
+  let speedAborted = false
+  const speedListeners = new Set<Listener<SpeedTestStatus>>()
 
   const emitState = () => listeners.state.forEach((l) => l(structuredClone(state)))
   const setStatus = (s: CoreStatus) => {
@@ -218,6 +221,42 @@ export function createMockBridge(): BridgeApi {
           internet: { ok: true, latency: 80 + Math.round(Math.random() * 25), checkedAt: now }
         }
       })
+    },
+    getSpeedTest: async () => speedTest,
+    runSpeedTest: async () => {
+      speedAborted = false
+      const setSpeed = (s: SpeedTestStatus) => {
+        speedTest = s
+        speedListeners.forEach((l) => l(s))
+      }
+      const steps = [['adapter', 'download', 41], ['adapter', 'upload', 12], ['core', 'download', 86], ['core', 'upload', 14]] as const
+      for (const [path, phase, value] of steps) {
+        for (let i = 0; i < 4 && !speedAborted; i++) {
+          setSpeed({ running: true, path, phase, mbps: value * (0.8 + Math.random() * 0.3) })
+          await wait(350)
+        }
+      }
+      if (speedAborted) return setSpeed({ running: false, result: speedTest.result })
+      setSpeed({
+        running: false,
+        result: {
+          adapter: { downMbps: 41.2, upMbps: 11.8, usedBytes: 41_000_000 },
+          core: { downMbps: 86.4, upMbps: 13.9, usedBytes: 72_000_000 },
+          serverName: state.servers.find((s) => s.id === state.selectedServerId)?.name ?? '',
+          mode: state.settings.mode,
+          tunStack: state.settings.tunStack,
+          tunMtu: state.settings.tunMtu,
+          at: Date.now()
+        }
+      })
+    },
+    stopSpeedTest: async () => {
+      speedAborted = true
+    },
+    onSpeedTest: sub(speedListeners),
+    findMtu: async () => {
+      await wait(1500)
+      return { pathMtu: 1492, target: '1.1.1.1', recommended: 1412 }
     },
     isAdmin: async () => true,
     relaunchAsAdmin: async () => undefined,

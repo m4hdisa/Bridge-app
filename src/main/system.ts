@@ -1,6 +1,7 @@
 // Windows integration: admin check, relaunch elevated, system proxy, running processes.
 import { execFile } from 'node:child_process'
 import { createServer } from 'node:net'
+import { networkInterfaces } from 'node:os'
 import { promisify } from 'node:util'
 import type { RunningProcess } from '../shared/types'
 
@@ -69,6 +70,21 @@ if ($s.ProxyServer -eq '127.0.0.1:${port}') {
   Set-ItemProperty -Path '${INTERNET_SETTINGS}' -Name ProxyEnable -Value 0
   ${REFRESH}
 }`)
+}
+
+/**
+ * True if the real adapter (or, when it isn't known, any adapter except Bridge's) has a real
+ * internet IPv6 address (2000::/3). Link-local (fe80), private (fc00/fd00), Teredo (2001:0) and
+ * 6to4 (2002) addresses don't count: Windows has those on networks without IPv6 too. Other
+ * tools' adapters don't count either: WARP's or another VPN's tunnel can have a public IPv6
+ * address on a network that has none.
+ */
+export function hasInternetIpv6(realAdapter?: string, interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): boolean {
+  return Object.entries(interfaces).some(
+    ([name, addresses]) =>
+      (realAdapter ? name === realAdapter : name !== 'Bridge') &&
+      (addresses || []).some((a) => a.family === 'IPv6' && !a.internal && /^[23]/.test(a.address) && !/^(2001:0:|2002:)/i.test(a.address))
+  )
 }
 
 export interface NetworkInfo {

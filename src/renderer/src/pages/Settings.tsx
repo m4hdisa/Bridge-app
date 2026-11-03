@@ -118,6 +118,38 @@ export function SettingsPage({ state, update, run }: PageProps) {
 
         <Card>
           <CardHeader>
+            <CardTitle>{t('VPN adapter')}</CardTitle>
+            <CardDescription>{t('For Per-App and Full VPN. Use the speed test on the Tools page to compare.')}</CardDescription>
+          </CardHeader>
+          <CardContent className="divide-y">
+            <Row title={t('Network stack')} description={t('How the adapter hands traffic to Bridge. Which one is fastest depends on the PC, so change it only if the speed test says the adapter is costing speed.')}>
+              <Select value={draft.tunStack} onValueChange={(v) => set('tunStack', v as Settings['tunStack'])}>
+                <SelectTrigger className="w-56">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mixed">{t('Mixed (default)')}</SelectItem>
+                  <SelectItem value="system">System</SelectItem>
+                  <SelectItem value="gvisor">gVisor</SelectItem>
+                </SelectContent>
+              </Select>
+            </Row>
+            <Row title={t('MTU')} description={t('Empty is automatic (9000), which suits most networks. Find MTU on the Tools page measures your line. Allowed: 1280 to 9000.')}>
+              <Input
+                type="number"
+                min={1280}
+                max={9000}
+                placeholder={t('Automatic')}
+                className="tabular w-28"
+                value={draft.tunMtu || ''}
+                onChange={(e) => set('tunMtu', Number(e.target.value) || 0)}
+              />
+            </Row>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>{t('Local proxy')}</CardTitle>
             <CardDescription>{t('SOCKS5 and HTTP on 127.0.0.1, available in every mode.')}</CardDescription>
           </CardHeader>
