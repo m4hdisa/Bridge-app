@@ -216,17 +216,28 @@ export const fa: Record<string, string> = {
   'Cloudflare WARP, no config or subscription needed. Bridge finds a way through your network each time you connect, which can take up to a minute; a saved config below connects in seconds. Sites see a Cloudflare address, and some of them ask for a captcha.':
     'Cloudflare WARP، بدون نیاز به کانفیگ یا اشتراک. Bridge هر بار که وصل می‌شوید راهی برای عبور از شبکه‌ی شما پیدا می‌کند که ممکن است تا یک دقیقه طول بکشد؛ با یک کانفیگ ذخیره‌شده در پایین، در چند ثانیه وصل می‌شوید. سایت‌ها آدرس Cloudflare می‌بینند و بعضی‌شان کپچا می‌خواهند.',
   'Connection method': 'روش اتصال',
-  'Auto (recommended)': 'خودکار (پیشنهادی)',
-  "Tries every way at once. Prefers Gool, whose exit is outside Iran; otherwise keeps the first one that works. If Gool misses, the next connects for a few hours don't wait for it.":
-    'همه‌ی روش‌ها را هم‌زمان امتحان می‌کند. Gool را ترجیح می‌دهد چون خروجی‌اش خارج از ایران است؛ وگرنه اولین روشی که کار کند را نگه می‌دارد. اگر Gool نرسد، تا چند ساعت اتصال‌های بعدی منتظرش نمی‌مانند.',
+  'Auto: fastest (recommended)': 'خودکار: سریع‌ترین (پیشنهادی)',
+  'Auto: exit outside Iran': 'خودکار: خروجی خارج از ایران',
+  'Tries every fast way at once and keeps the fastest that works. The exit is usually registered in Iran: filtering is bypassed, but sites that block Iranian users may refuse.':
+    'همه‌ی روش‌های سریع را هم‌زمان امتحان می‌کند و سریع‌ترینی که کار کند را نگه می‌دارد. خروجی معمولاً به نام ایران ثبت شده: فیلتر دور زده می‌شود، ولی سایت‌هایی که کاربران ایرانی را مسدود می‌کنند ممکن است باز نشوند.',
+  "Also tries Gool and waits for it, because its exit is outside Iran. Connecting takes longer and the speed is much lower, upload most of all. If Gool misses, the next connects for a few hours don't wait for it.":
+    'Gool را هم امتحان می‌کند و منتظرش می‌ماند، چون خروجی‌اش خارج از ایران است. اتصال بیشتر طول می‌کشد و سرعت خیلی کمتر است، مخصوصاً آپلود. اگر Gool نرسد، تا چند ساعت اتصال‌های بعدی منتظرش نمی‌مانند.',
+  'Found a way. Giving HTTP/3, the fastest, a few seconds': 'راهی پیدا شد. چند ثانیه به HTTP/3 که سریع‌ترین است فرصت می‌دهیم',
+  'Share with someone': 'اشتراک با دیگران',
+  'Making a link…': 'در حال ساخت لینک…',
+  'Share link copied. It has its own WARP account, so send it only to people you trust.': 'لینک اشتراک کپی شد. این لینک حساب WARP خودش را دارد، پس فقط برای کسانی بفرستید که به آن‌ها اعتماد دارید.',
+  Received: 'دریافتی',
+  'Speed in Mbps when this config was found': 'سرعت بر حسب مگابیت، وقتی این کانفیگ پیدا شد',
   'Gool (WARP in WARP)': 'Gool (WARP داخل WARP)',
+  'Gool over HTTP/3': 'Gool روی HTTP/3',
+  'Gool with a faster download than plain Gool. Needs UDP, which some networks block.': 'Gool با دانلود سریع‌تر از Gool معمولی. به UDP نیاز دارد که بعضی شبکه‌ها مسدودش می‌کنند.',
   'MASQUE over HTTP/3': 'MASQUE روی HTTP/3',
   'MASQUE over HTTP/2': 'MASQUE روی HTTP/2',
   'HTTP/2 + fragment': 'HTTP/2 + fragment',
   'HTTP/2 over IPv6': 'HTTP/2 روی IPv6',
   WireGuard: 'WireGuard',
-  'Exits outside Iran: a second WARP hop is opened from inside the first, so Cloudflare gives a foreign address. A bit slower. Auto prefers it.':
-    'خروجی خارج از ایران: یک اتصال WARP دوم از داخل اولی باز می‌شود تا Cloudflare آدرس خارجی بدهد. کمی کندتر. حالت خودکار آن را ترجیح می‌دهد.',
+  'Exits outside Iran: a second WARP hop is opened from inside the first, so Cloudflare gives a foreign address. Much slower than the others, upload most of all.':
+    'خروجی خارج از ایران: یک اتصال WARP دوم از داخل اولی باز می‌شود تا Cloudflare آدرس خارجی بدهد. خیلی کندتر از بقیه، مخصوصاً در آپلود.',
   'Fastest. Needs UDP, which some networks block (often Irancell).': 'سریع‌ترین. به UDP نیاز دارد که بعضی شبکه‌ها مسدودش می‌کنند (اغلب ایرانسل).',
   'Runs over TCP, for networks that block QUIC / UDP.': 'روی TCP کار می‌کند، برای شبکه‌هایی که QUIC / UDP را مسدود می‌کنند.',
   'Splits the TLS handshake, for networks that reset it (some home internet).': 'دست‌دهی TLS را تکه‌تکه می‌فرستد، برای شبکه‌هایی که آن را قطع می‌کنند (بعضی اینترنت‌های خانگی).',
@@ -234,11 +245,11 @@ export const fa: Record<string, string> = {
   'Classic WARP. Usually blocked in Iran; not tried by Auto.': 'WARP کلاسیک. معمولاً در ایران مسدود است؛ حالت خودکار امتحانش نمی‌کند.',
   'Saved configs': 'کانفیگ‌های ذخیره‌شده',
   'Disconnect to find configs: Bridge tests every way on your own network.': 'برای پیدا کردن کانفیگ قطع کنید: Bridge همه‌ی روش‌ها را روی شبکه‌ی خود شما تست می‌کند.',
-  'Tests every way through your network once and saves each one that works, with its gateway. Connecting to a saved config skips the search, so it takes seconds.':
-    'همه‌ی راه‌های عبور از شبکه‌ی شما را یک بار تست می‌کند و هر کدام که کار کند را با gateway‌اش ذخیره می‌کند. اتصال با کانفیگ ذخیره‌شده بدون جست‌وجو و در چند ثانیه انجام می‌شود.',
+  'Tests every way through your network, looks for several gateways, measures the speed of each (about 10 MB per config) and saves them fastest first. Connecting to a saved config skips the search, so it takes seconds. Got a link from someone? Copy it, then choose Add servers, Links from clipboard.':
+    'همه‌ی راه‌های عبور از شبکه‌ی شما را تست می‌کند، چند gateway پیدا می‌کند، سرعت هر کدام را می‌سنجد (حدود ۱۰ مگابایت برای هر کانفیگ) و از سریع‌ترین مرتب ذخیره می‌کند. اتصال با کانفیگ ذخیره‌شده بدون جست‌وجو و در چند ثانیه انجام می‌شود. از کسی لینک گرفته‌اید؟ کپی‌اش کنید و از «افزودن سرور» گزینه‌ی «لینک‌ها از کلیپ‌بورد» را بزنید.',
   'Find configs': 'پیدا کردن کانفیگ‌ها',
   'Find again': 'پیدا کردن دوباره',
-  'Finding… (up to 1.5 min)': 'در حال جست‌وجو… (تا 1.5 دقیقه)',
+  'Finding… (up to 4 min)': 'در حال جست‌وجو… (تا ۴ دقیقه)',
   '{n} config found': '{n} کانفیگ پیدا شد',
   '{n} configs found': '{n} کانفیگ پیدا شد',
   'No way through found on this network right now': 'الان راهی برای عبور از این شبکه پیدا نشد',

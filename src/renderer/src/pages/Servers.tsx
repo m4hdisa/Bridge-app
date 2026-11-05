@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Check, ChevronRight, ClipboardPaste, Cloud, Copy, Ellipsis, FileText, Link2, Plus, RefreshCw, Repeat, Server as ServerIcon, Trash2, TriangleAlert, Zap } from 'lucide-react'
+import { Check, ChevronRight, ClipboardPaste, Cloud, Copy, Ellipsis, FileText, Link2, LoaderCircle, Plus, RefreshCw, Repeat, Server as ServerIcon, Share2, Trash2, TriangleAlert, Zap } from 'lucide-react'
 import { WARP_METHODS, type ImportResult, type ServerProfile, type Subscription, type WarpOptions } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { ago, bytes } from '../format'
@@ -330,6 +330,20 @@ function Tile({ label, className, children }: { label: string; className?: strin
   )
 }
 
+/** Makes a share link (a new WARP account takes a moment, sometimes minutes) and copies it. */
+function useWarpShare(id: string, run: PageProps['run']) {
+  const [sharing, setSharing] = useState(false)
+  const share = async () => {
+    setSharing(true)
+    await run(
+      () => api.shareWarp(id),
+      () => t('Share link copied. It has its own WARP account, so send it only to people you trust.')
+    )
+    setSharing(false)
+  }
+  return { sharing, share }
+}
+
 function WarpCard({
   server: s,
   configs,
@@ -344,6 +358,7 @@ function WarpCard({
   run: PageProps['run']
 }) {
   const [finding, setFinding] = useState(false)
+  const { sharing, share } = useWarpShare(s.id, run)
   const selected = s.id === selectedId
   const find = async () => {
     setFinding(true)
@@ -354,7 +369,12 @@ function WarpCard({
     setFinding(false)
   }
   const method = s.warp?.method ?? 'auto'
-  const hint = method === 'auto' ? t('Tries every way at once. Prefers Gool, whose exit is outside Iran; otherwise keeps the first one that works. If Gool misses, the next connects for a few hours don\'t wait for it.') : t(WARP_METHODS.find((m) => m.id === method)?.hint ?? '')
+  const hint =
+    method === 'auto'
+      ? t('Tries every fast way at once and keeps the fastest that works. The exit is usually registered in Iran: filtering is bypassed, but sites that block Iranian users may refuse.')
+      : method === 'auto-foreign'
+        ? t("Also tries Gool and waits for it, because its exit is outside Iran. Connecting takes longer and the speed is much lower, upload most of all. If Gool misses, the next connects for a few hours don't wait for it.")
+        : t(WARP_METHODS.find((m) => m.id === method)?.hint ?? '')
   return (
     <Card className={cn(selected && 'border-brand/50')}>
       <CardHeader>
@@ -384,6 +404,11 @@ function WarpCard({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={sharing} onClick={share}>
+                <Share2 />
+                {sharing ? t('Making a link…') : t('Share with someone')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onClick={() => run(() => api.removeServer(s.id), () => t('Free WARP removed'))}>
                 <Trash2 />
                 {t('Remove')}
@@ -400,7 +425,8 @@ function WarpCard({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="auto">{t('Auto (recommended)')}</SelectItem>
+              <SelectItem value="auto">{t('Auto: fastest (recommended)')}</SelectItem>
+              <SelectItem value="auto-foreign">{t('Auto: exit outside Iran')}</SelectItem>
               {WARP_METHODS.map((m) => (
                 <SelectItem key={m.id} value={m.id}>
                   {t(m.label)}
@@ -418,12 +444,12 @@ function WarpCard({
               <p className="text-muted-foreground text-xs">
                 {connected
                   ? t('Disconnect to find configs: Bridge tests every way on your own network.')
-                  : t('Tests every way through your network once and saves each one that works, with its gateway. Connecting to a saved config skips the search, so it takes seconds.')}
+                  : t('Tests every way through your network, looks for several gateways, measures the speed of each (about 10 MB per config) and saves them fastest first. Connecting to a saved config skips the search, so it takes seconds. Got a link from someone? Copy it, then choose Add servers, Links from clipboard.')}
               </p>
             </div>
             <Button size="sm" variant="outline" disabled={finding || connected} onClick={find}>
               <RefreshCw className={cn(finding && 'animate-spin')} />
-              {finding ? t('Finding… (up to 1.5 min)') : configs.length ? t('Find again') : t('Find configs')}
+              {finding ? t('Finding… (up to 4 min)') : configs.length ? t('Find again') : t('Find configs')}
             </Button>
           </div>
           {configs.length > 0 && (
@@ -441,7 +467,8 @@ function WarpCard({
 
 function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
   const w = s.warp!
-  const label = WARP_METHODS.find((m) => m.id === w.method)?.label ?? w.method
+  const label = WARP_METHODS.find((m) => m.id === w.method)?.label ?? t('Auto')
+  const { sharing, share } = useWarpShare(s.id, run)
   const pick = () => !selected && run(() => api.selectServer(s.id))
   return (
     <div
@@ -459,9 +486,22 @@ function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; se
       </span>
       <CloudflareMark />
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-sm font-medium">{t(label)}</span>
+        <span className="flex items-center gap-2 truncate text-sm font-medium">
+          {t(label)}
+          {w.shared && <Badge variant="secondary">{t('Received')}</Badge>}
+        </span>
         <span className="text-muted-foreground truncate font-mono text-xs">{w.peer}</span>
       </div>
+      {w.downMbps !== undefined && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span dir="ltr" className="text-muted-foreground tabular text-xs whitespace-nowrap">
+              ↓ {w.downMbps} ↑ {w.upMbps ?? '?'}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{t('Speed in Mbps when this config was found')}</TooltipContent>
+        </Tooltip>
+      )}
       {w.exit && (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -474,6 +514,24 @@ function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; se
         </Tooltip>
       )}
       {w.readyMs !== undefined && <span className="text-muted-foreground tabular w-12 text-end text-xs">{(w.readyMs / 1000).toFixed(1)} s</span>}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={sharing}
+            aria-label={t('Share with someone')}
+            className={cn(!sharing && 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100')}
+            onClick={(e) => {
+              e.stopPropagation()
+              void share()
+            }}
+          >
+            {sharing ? <LoaderCircle className="animate-spin" /> : <Share2 />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{sharing ? t('Making a link…') : t('Share with someone')}</TooltipContent>
+      </Tooltip>
       <Button
         variant="ghost"
         size="icon-sm"

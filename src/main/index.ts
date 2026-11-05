@@ -193,7 +193,15 @@ function addLinks(links: string[]): ImportResult {
   const existing = new Set(store.state.servers.map((s) => s.link))
   const { servers, skipped } = parseLinks(links.filter((l) => !existing.has(l)))
   store.update((s) => {
-    s.servers.push(...servers)
+    const received = servers.filter(isWarp)
+    s.servers.push(...servers.filter((x) => !isWarp(x)))
+    if (received.length) {
+      // Received WARP configs live under the Free WARP card, like the ones Bridge finds itself.
+      let at = s.servers.findIndex((x) => isWarp(x) && !isWarpConfig(x))
+      if (at < 0) s.servers.unshift(newWarpServer()), (at = 0)
+      s.servers.splice(at + 1, 0, ...received)
+      if (!s.selectedServerId) s.selectedServerId = received[0].id
+    }
     if (!s.selectedServerId && s.servers.length) s.selectedServerId = s.servers[0].id
   })
   pushState()
@@ -329,10 +337,10 @@ function watchHealth(s: CoreStatus): void {
 // user's own servers: the one with the best ping, or else the first one.
 core.warpHelper = () => bestServer() ?? store.state.servers.find((s) => !isWarp(s))
 // A saved WARP config's gateway stopped answering and the scan found another: keep the new one.
-core.onWarpPeer = (id, peer) => {
+core.onWarpPeer = (id, peer, method) => {
   const server = store.state.servers.find((s) => s.id === id)
   if (!server?.warp) return
-  store.update(() => (server.warp = { ...server.warp!, peer }))
+  store.update(() => (server.warp = { ...server.warp!, peer, method }))
   pushState()
 }
 
@@ -434,6 +442,7 @@ handle('getLogs', () => core.logs)
 handle('importText', (text: string) => withAutoPing(addLinks(extractLinks(text)), 'new servers'))
 handle('importClipboard', () => withAutoPing(addLinks(extractLinks(clipboard.readText())), 'new servers'))
 handle('removeServer', (id: string) => {
+  if (store.state.servers.find((x) => x.id === id)?.warp?.shared) core.removeSharedWarpAccount(id)
   store.update((s) => {
     s.servers = s.servers.filter((x) => x.id !== id)
     if (s.selectedServerId === id) s.selectedServerId = s.servers[0]?.id
@@ -478,10 +487,11 @@ handle('addWarpServer', async () => {
 })
 handle('findWarpConfigs', async () => {
   const found = await core.findWarpConfigs()
-  // Gool first (its exit is outside Iran), then the fastest.
-  found.sort((a, b) => Number(b.method === 'gool') - Number(a.method === 'gool') || a.readyMs - b.readyMs)
+  // The fastest first; those whose speed couldn't be measured go by how fast they connected.
+  found.sort((a, b) => (b.downMbps ?? 0) - (a.downMbps ?? 0) || a.readyMs - b.readyMs)
   store.update((s) => {
-    const old = new Set(s.servers.filter(isWarpConfig).map((x) => x.id))
+    // Configs someone sent stay: their accounts can't be found again.
+    const old = new Set(s.servers.filter((x) => isWarpConfig(x) && !x.warp?.shared).map((x) => x.id))
     const configs = found.map(newWarpConfig)
     let at = s.servers.findIndex((x) => isWarp(x) && !isWarpConfig(x))
     if (at < 0) s.servers.unshift(newWarpServer()), (at = 0)
@@ -492,6 +502,13 @@ handle('findWarpConfigs', async () => {
   })
   pushState()
   return found.length
+})
+handle('shareWarp', async (id: string) => {
+  const server = store.state.servers.find((s) => s.id === id)
+  if (!server) throw new Error('Server not found')
+  const link = await core.shareWarpLink(server)
+  clipboard.writeText(link)
+  return link
 })
 handle('setWarpMethod', async (id: string, method: WarpOptions['method']) => {
   const server = store.state.servers.find((s) => s.id === id)

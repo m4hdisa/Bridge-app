@@ -1,6 +1,6 @@
 // Offline self-test: parses sample links, builds configs for every mode and
 // validates them with `sing-box check`. Does NOT start a VPN or touch the network.
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir, type NetworkInterfaceInfo } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +9,8 @@ import { buildConfig, buildTestConfig } from '../src/main/config'
 import { usageFromNames } from '../src/main/subscription'
 import { isNewer } from '../src/shared/version'
 import { handoffCandidates, isPublicIPv4 } from '../src/main/handoff'
-import { hasInternetIpv6 } from '../src/main/system'
+import { answerAddresses } from '../src/main/dnsrelay'
+import { hasInternetIpv6, proxyCleanupCommand } from '../src/main/system'
 import { findPathMtu, recommendMtu } from '../src/main/mtu'
 import { adapterDialer, averageMbps } from '../src/main/speedtest'
 import { Store } from '../src/main/store'
@@ -288,6 +289,20 @@ console.log('Defaults (a PC with no other VPN or game tool open)')
   else fail('Strict with DoH', 'off')
   if (strictTun({ type: 'udp', server: '192.0.2.1' }) === false && strictTun() === false) ok('Strict mode stays off without DNS-over-HTTPS')
   else fail('Strict without DoH', 'on')
+  // Hand-built answer, so the details that matter are certain: a compressed name and a CNAME first.
+  const answer = Buffer.from('000081800001000300000000' + '03777777076578616d706c6503636f6d0000010001' + 'c00c00050001000000050002c010' + 'c01000010001000000050004cb007101' + 'c01000010001000000050004cb007102', 'hex')
+  const read = answerAddresses(answer)
+  if (read.map((a) => a.ip).join() === '203.0.113.1,203.0.113.2') ok('reads the addresses in a DNS answer')
+  else fail('DNS answer', JSON.stringify(read))
+  if (answerAddresses(answer.subarray(0, 40)).length === 0 && answerAddresses(Buffer.alloc(3)).length === 0) ok('a damaged DNS answer has no addresses, and no crash')
+  else fail('damaged DNS answer', 'read something')
+  const relayed = buildConfig({ server: profiles[0], settings: { ...settings, strictRoute: true }, appRules, clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'apps'), localDns: { type: 'https', server: '1.1.1.1', working: ['1.1.1.1'] }, dnsRelayPort: 45555, defaultInterface: 'Wi-Fi' }) as { dns: { servers: { type: string; tag: string; server_port?: number }[] }; inbounds: { type: string; strict_route?: boolean }[] }
+  const relayServer = relayed.dns.servers.find((s) => s.tag === 'dns-local')
+  if (relayServer?.type === 'tcp' && relayServer.server_port === 45555) ok('names go to the DNS relay when it runs')
+  else fail('DNS relay', JSON.stringify(relayServer))
+  if (relayed.inbounds.find((i) => i.type === 'tun')?.strict_route === true) ok('Strict mode stays on with the relay')
+  else fail('Strict with relay', 'off')
+  check('with the DNS relay', relayed)
   check('FakeIP and Strict mode', buildConfig({ server: profiles[0], settings: { ...settings, dnsMode: 'fakeip', strictRoute: true }, appRules, clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'apps'), localDns: { type: 'https', server: '1.1.1.1' } }))
 }
 
@@ -343,6 +358,26 @@ console.log('MTU finder')
     else fail('nothing answers', JSON.stringify(none))
     if (recommendMtu(1500) === undefined) ok('1500 keeps the default')
     else fail('recommendMtu(1500)', recommendMtu(1500))
+
+    console.log('\nProxy left on after a shutdown (on a scratch registry key, not the real proxy setting):')
+    const longest = proxyCleanupCommand(65535)
+    if (longest.length <= 260) ok(`fits Windows' RunOnce limit (${longest.length} of 260 characters)`)
+    else fail('RunOnce limit', String(longest.length))
+    const key = 'HKCU:\\Software\\BridgeSelftest'
+    const ps = (script: string) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true }).trim()
+    // Windows hands a RunOnce value to the command line as it is, so it runs here the same way.
+    const atSignIn = (port: number) => spawnSync('cmd.exe', ['/c', proxyCleanupCommand(port, key)], { windowsVerbatimArguments: true, windowsHide: true })
+    try {
+      ps(`New-Item -Path '${key}' -Force | Out-Null; Set-ItemProperty '${key}' ProxyEnable 1; Set-ItemProperty '${key}' ProxyServer '127.0.0.1:2080'`)
+      atSignIn(2081)
+      if (ps(`(Get-ItemProperty '${key}').ProxyEnable`) === '1') ok('leaves a proxy alone that is not on its port')
+      else fail('other proxy', 'turned off')
+      atSignIn(2080)
+      if (ps(`(Get-ItemProperty '${key}').ProxyEnable`) === '0') ok("turns off Bridge's own proxy")
+      else fail("Bridge's proxy", 'still on')
+    } finally {
+      ps(`Remove-Item -Path '${key}' -Recurse -ErrorAction SilentlyContinue`)
+    }
   })().finally(() => {
     rmSync(dir, { recursive: true, force: true })
     console.log(failed ? `\n${failed} FAILED` : '\nAll passed')

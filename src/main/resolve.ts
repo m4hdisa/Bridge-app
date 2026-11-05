@@ -80,6 +80,8 @@ async function dohServerWorks(server: string): Promise<boolean> {
 export interface DirectDns {
   type: 'https' | 'udp'
   server: string
+  /** Every DoH server that answered, best first; the relay falls back along this list. */
+  working?: string[]
 }
 
 /** Public DoH resolvers reachable by IP (their certificates cover the IP), in order of preference. */
@@ -95,8 +97,8 @@ const DOH_SERVERS = ['1.1.1.1', '8.8.8.8', '9.9.9.9', '1.0.0.1', '8.8.4.4', '149
  */
 export async function pickDirectDns(networkServers: string[], log: (text: string, level?: 'info' | 'warn') => void): Promise<DirectDns | undefined> {
   const doh = await Promise.all(DOH_SERVERS.map((s) => dohServerWorks(s)))
-  const dohServer = DOH_SERVERS.find((_, i) => doh[i])
-  if (dohServer) return { type: 'https', server: dohServer }
+  const working = DOH_SERVERS.filter((_, i) => doh[i])
+  if (working.length) return { type: 'https', server: working[0], working }
 
   log('No DNS-over-HTTPS server answered; falling back to plain DNS, Direct apps may not resolve names', 'warn')
   const usable = networkServers.filter((s) => !s.startsWith('127.') && !s.startsWith('0.'))
@@ -106,6 +108,9 @@ export async function pickDirectDns(networkServers: string[], log: (text: string
   const udp = candidates.find((_, i) => results[i])
   return udp ? { type: 'udp', server: udp } : undefined
 }
+
+/** How long one lookup of a server's address is reused. */
+const RECENT_MS = 60_000
 
 export class ServerResolver {
   private cache: Record<string, string> = {}
@@ -121,9 +126,23 @@ export class ServerResolver {
     }
   }
 
-  /** Returns a usable IPv4 address for a server host, or undefined if none could be found. */
+  private recent = new Map<string, { at: number; result: Promise<Resolution | undefined> }>()
+
+  /**
+   * Returns a usable IPv4 address for a server host, or undefined if none could be found. Asking
+   * again soon gets the same answer: a subscription's servers often share one host, and a
+   * server test would otherwise open two connections to public DNS servers for each of them.
+   */
   async resolve(host: string): Promise<Resolution | undefined> {
     if (isIP(host)) return { ip: host, source: 'address in link' }
+    const recent = this.recent.get(host)
+    if (recent && Date.now() - recent.at < RECENT_MS) return recent.result
+    const result = this.lookup(host)
+    this.recent.set(host, { at: Date.now(), result })
+    return result
+  }
+
+  private async lookup(host: string): Promise<Resolution | undefined> {
     const name = encodeURIComponent(host)
     const sources: [string, Promise<string>][] = [
       ['Cloudflare DoH', viaDoh(`https://1.1.1.1/dns-query?name=${name}&type=A`, host)],

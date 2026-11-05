@@ -109,11 +109,19 @@ export function createMockBridge(): BridgeApi {
       state.servers.splice(
         at,
         0,
-        { ...base, id: 'warp-gool', name: 'Free WARP · Gool (WARP in WARP) · DE', server: '162.159.198.131', link: 'warp://gool@162.159.198.131:443', warp: { method: 'gool', peer: '162.159.198.131:443', exit: 'DE', readyMs: 9400 } },
-        { ...base, id: 'warp-h2', name: 'Free WARP · MASQUE over HTTP/2 · IR', server: '162.159.198.183', link: 'warp://h2@162.159.198.183:443', warp: { method: 'h2', peer: '162.159.198.183:443', exit: 'IR', readyMs: 6800 } }
+        { ...base, id: 'warp-h3', name: 'Free WARP · MASQUE over HTTP/3 · IR', server: '162.159.199.1', link: 'warp://h3@162.159.199.1:443', warp: { method: 'h3', peer: '162.159.199.1:443', exit: 'IR', readyMs: 3900, downMbps: 192, upMbps: 166 } },
+        { ...base, id: 'warp-h2', name: 'Free WARP · MASQUE over HTTP/2 · IR', server: '162.159.198.183', link: 'warp://h2@162.159.198.183:443', warp: { method: 'h2', peer: '162.159.198.183:443', exit: 'IR', readyMs: 6800, downMbps: 96, upMbps: 135 } },
+        { ...base, id: 'warp-gool', name: 'Free WARP · Gool (WARP in WARP) · DE', server: '162.159.198.131', link: 'warp://gool@162.159.198.131:443', warp: { method: 'gool', peer: '162.159.198.131:443', exit: 'DE', readyMs: 9400, downMbps: 62, upMbps: 22 } },
+        { ...base, id: 'warp-got', name: 'From a friend', server: '162.159.198.65', link: 'bridge://warp?m=h2&p=162.159.198.65:443', warp: { method: 'h2', peer: '162.159.198.65:443', exit: 'DE', shared: true } }
       )
       emitState()
-      return 2
+      return 4
+    },
+    shareWarp: async (id) => {
+      await new Promise((r) => setTimeout(r, 1500))
+      const link = `bridge://warp?m=${state.servers.find((s) => s.id === id)?.warp?.method}&a=preview`
+      await navigator.clipboard?.writeText(link).catch(() => undefined)
+      return link
     },
     selectServer: async (id) => {
       state.settings.autoServer = id === 'auto'

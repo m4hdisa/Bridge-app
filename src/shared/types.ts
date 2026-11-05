@@ -35,14 +35,15 @@ export interface ServerProfile {
 export type Engine = 'sing-box' | 'xray' | 'aether'
 
 /** How the free WARP server reaches Cloudflare. Which ones get through depends on the network. */
-export type WarpMethod = 'gool' | 'h3' | 'h2' | 'h2-fragment' | 'h2-ipv6' | 'wireguard'
+export type WarpMethod = 'gool' | 'gool-h3' | 'h3' | 'h2' | 'h2-fragment' | 'h2-ipv6' | 'wireguard'
 
 export interface WarpOptions {
   /**
-   * "auto" tries the methods at the same time. Gool is preferred, because the others usually get
-   * an exit that Cloudflare registers in Iran; one of them is used if Gool doesn't get through.
+   * The two Auto modes try the methods at the same time. "auto" keeps the fastest one that works,
+   * usually with an exit Cloudflare registers in Iran. "auto-foreign" waits for Gool, whose exit
+   * is outside Iran but which is much slower, and uses another method if Gool doesn't get through.
    */
-  method: WarpMethod | 'auto'
+  method: WarpMethod | 'auto' | 'auto-foreign'
   /**
    * Set on configs found by "Find configs": the Cloudflare gateway ("ip:port") this method got
    * through on, so connecting skips the scan. Bridge scans again if it stops answering.
@@ -52,6 +53,11 @@ export interface WarpOptions {
   exit?: string
   /** How long the tunnel took to come up when the config was found. */
   readyMs?: number
+  /** Speed measured through this config when it was found. */
+  downMbps?: number
+  upMbps?: number
+  /** Came from someone else's share link: it has a WARP account of its own, carried in its link. */
+  shared?: boolean
 }
 
 /** One way through to WARP that "Find configs" proved on this network. */
@@ -60,10 +66,14 @@ export interface WarpFound {
   peer: string
   exit?: string
   readyMs: number
+  downMbps?: number
+  upMbps?: number
 }
 
+/** `auto`: raced by the "fastest" Auto mode. Gool joins only the "exit outside Iran" one. */
 export const WARP_METHODS: { id: WarpMethod; label: string; hint: string; auto: boolean }[] = [
-  { id: 'gool', label: 'Gool (WARP in WARP)', hint: 'Exits outside Iran: a second WARP hop is opened from inside the first, so Cloudflare gives a foreign address. A bit slower. Auto prefers it.', auto: true },
+  { id: 'gool', label: 'Gool (WARP in WARP)', hint: 'Exits outside Iran: a second WARP hop is opened from inside the first, so Cloudflare gives a foreign address. Much slower than the others, upload most of all.', auto: false },
+  { id: 'gool-h3', label: 'Gool over HTTP/3', hint: 'Gool with a faster download than plain Gool. Needs UDP, which some networks block.', auto: false },
   { id: 'h3', label: 'MASQUE over HTTP/3', hint: 'Fastest. Needs UDP, which some networks block (often Irancell).', auto: true },
   { id: 'h2', label: 'MASQUE over HTTP/2', hint: 'Runs over TCP, for networks that block QUIC / UDP.', auto: true },
   { id: 'h2-fragment', label: 'HTTP/2 + fragment', hint: 'Splits the TLS handshake, for networks that reset it (some home internet).', auto: true },
@@ -350,6 +360,8 @@ export interface BridgeApi {
   setWarpMethod(id: string, method: WarpOptions['method']): Promise<void>
   /** Tries every WARP method on this network (while disconnected) and saves the ones that work as configs. Returns how many. */
   findWarpConfigs(): Promise<number>
+  /** Makes a share link for a WARP server or config, with a new WARP account made just for it. */
+  shareWarp(id: string): Promise<string>
   testLatency(ids?: string[]): Promise<void>
 
   addSubscription(name: string, url: string): Promise<ImportResult>

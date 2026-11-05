@@ -1,6 +1,7 @@
 // Converts share links (vless://, vmess://, trojan://, ss://, hysteria2://, tuic://)
 // into sing-box outbound objects.
 import { randomUUID } from 'node:crypto'
+import { WARP_SHARE_SCHEME, warpServerFromLink } from './warp'
 import { linkToXray, xrayServer, type XrayOutbound } from './xray'
 import type { Outbound, Protocol, ServerProfile } from '../shared/types'
 
@@ -78,6 +79,7 @@ export function describeLink(link: string): { name: string; kind: string } {
  * otherwise Xray (xhttp, VLESS Encryption, TCP HTTP camouflage...).
  */
 export function parseLink(link: string): ServerProfile {
+  if (link.startsWith(WARP_SHARE_SCHEME)) return warpServerFromLink(link)
   let xray: XrayOutbound | undefined
   let xrayError: unknown
   try {

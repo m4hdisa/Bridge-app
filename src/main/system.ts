@@ -52,10 +52,23 @@ Add-Type -Namespace Bridge -Name WinInet -MemberDefinition '[DllImport("wininet.
 [void][Bridge.WinInet]::InternetSetOption([System.IntPtr]::Zero, 37, [System.IntPtr]::Zero, 0)
 `
 
+const RUN_ONCE = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce'
+const PROXY_CLEANUP_VALUE = 'BridgeClearProxy'
+
+/**
+ * Command Windows runs at the next sign-in if Bridge never got to turn its proxy off (shutdown
+ * or power loss while connected). Otherwise every browser keeps using a port nothing listens on
+ * and looks offline until Bridge is opened. Windows limits RunOnce commands to 260 characters.
+ */
+export function proxyCleanupCommand(port: number, settingsPath = INTERNET_SETTINGS): string {
+  return `powershell -w hidden -nop -c "$p='${settingsPath}';if((gp $p).ProxyServer -eq '127.0.0.1:${port}'){sp $p ProxyEnable 0}"`
+}
+
 export async function setSystemProxy(port: number): Promise<void> {
   const private172 = Array.from({ length: 16 }, (_, i) => `172.${16 + i}.*`).join(';')
   const bypass = `localhost;127.*;10.*;${private172};192.168.*;<local>`
   await powershell(`
+Set-ItemProperty -Path '${RUN_ONCE}' -Name ${PROXY_CLEANUP_VALUE} -Value ${psQuote(proxyCleanupCommand(port))}
 Set-ItemProperty -Path '${INTERNET_SETTINGS}' -Name ProxyEnable -Value 1
 Set-ItemProperty -Path '${INTERNET_SETTINGS}' -Name ProxyServer -Value '127.0.0.1:${port}'
 Set-ItemProperty -Path '${INTERNET_SETTINGS}' -Name ProxyOverride -Value '${bypass}'
@@ -65,6 +78,7 @@ ${REFRESH}`)
 /** Turns the system proxy off, but only if it still points at our local port. */
 export async function clearSystemProxy(port: number): Promise<void> {
   await powershell(`
+Remove-ItemProperty -Path '${RUN_ONCE}' -Name ${PROXY_CLEANUP_VALUE} -ErrorAction SilentlyContinue
 $s = Get-ItemProperty -Path '${INTERNET_SETTINGS}'
 if ($s.ProxyServer -eq '127.0.0.1:${port}') {
   Set-ItemProperty -Path '${INTERNET_SETTINGS}' -Name ProxyEnable -Value 0

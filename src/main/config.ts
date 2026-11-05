@@ -23,6 +23,8 @@ export interface BuildOptions {
   appRulesDir: string
   /** How Direct traffic resolves names (see pickDirectDns). Falls back to sing-box's "local" resolver. */
   localDns?: DirectDns
+  /** Local port of Bridge's DNS relay (see dnsrelay.ts), which then answers instead of `localDns`. */
+  dnsRelayPort?: number
   /** Exe paths whose traffic always goes direct, e.g. Bridge's own xray.exe. */
   bypassProcesses?: string[]
   /**
@@ -125,7 +127,11 @@ export function writeAppRuleSets(dir: string, rules: AppRule[]): void {
  *    traffic by IP keep working.
  */
 function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
-  const local: Json = o.localDns ? { type: o.localDns.type, tag: 'dns-local', server: o.localDns.server } : { type: 'local', tag: 'dns-local' }
+  const local: Json = o.dnsRelayPort
+    ? { type: 'tcp', tag: 'dns-local', server: '127.0.0.1', server_port: o.dnsRelayPort }
+    : o.localDns
+      ? { type: o.localDns.type, tag: 'dns-local', server: o.localDns.server }
+      : { type: 'local', tag: 'dns-local' }
   const rules: Json[] = []
   if (o.settings.bypassIran) {
     rules.push({ domain_suffix: ['.ir'], server: 'dns-local' })
@@ -136,7 +142,9 @@ function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
     servers.push({ type: 'fakeip', tag: 'dns-fake', inet4_range: '198.18.0.0/15' })
     rules.push({ query_type: ['A', 'AAAA'], server: 'dns-fake' })
   }
-  return { servers, rules, final: 'dns-local', strategy: 'ipv4_only' }
+  // An answer just past its TTL (a few seconds, on many CDNs) is used at once and refreshed behind
+  // the scenes, so sites people keep using never wait on a lookup.
+  return { servers, rules, final: 'dns-local', strategy: 'ipv4_only', optimistic: { enabled: true, timeout: '1h' } }
 }
 
 /** Builds the config and writes the app rule-set files it points to. */

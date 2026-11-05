@@ -2,18 +2,19 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, SPEED_TEST_PORTS, withServerIp, writeAppRuleSets, type ClashApi } from './config'
 import { connect } from 'node:net'
 import { networkInterfaces } from 'node:os'
+import { DnsRelay } from './dnsrelay'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
-import { GOOL_RETRY_MS, isWarp, parseWarpLine, prefersForeignExit, WARP_EXIT_REFUSED, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, type WarpState } from './warp'
+import { GOOL_RETRY_MS, isWarp, parseWarpLine, parseWarpShareLink, prefersForeignExit, WARP_EXIT_REFUSED, WARP_FIND_METHODS, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, waitForH3, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, warpShareLink, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, hasInternetIpv6, networkInfo, setHostRoutes, setSystemProxy } from './system'
 import { handoffCandidates } from './handoff'
 import { findPathMtu, MTU_TARGETS } from './mtu'
-import { adapterDialer, runPath, socksDialer } from './speedtest'
+import { adapterDialer, quickSpeed, runPath, socksDialer } from './speedtest'
 import { HEALTH_INTERVAL_MS, usesTun } from '../shared/types'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, MtuResult, ServerProfile, Settings, SpeedPath, SpeedResult, SpeedTestResult, TrafficStats, WarpFound, WarpMethod } from '../shared/types'
 
@@ -107,6 +108,20 @@ const WARP_ATTEMPT_MS = 75_000
 const WARP_PEER_MS = 25_000
 /** Once another method works, how long Auto still waits for Gool (whose exit is outside Iran). */
 const WARP_PREFER_WAIT_MS = 30_000
+/** Once HTTP/2 works, how long Auto still waits for HTTP/3 (about twice as fast). */
+const WARP_PREFER_H3_MS = 8_000
+/** "Find configs" looks for further gateways on the methods that work, within these limits. */
+const WARP_FIND_MORE_MS = 90_000
+const WARP_FIND_ROUNDS = 2
+const WARP_FIND_MAX = 12
+/** How long a further gateway may take; the method is already known to work here. */
+const WARP_FIND_ATTEMPT_MS = 30_000
+
+/** Which WARP account a tunnel runs on; `verify` holds its gateway to Cloudflare's certificate. */
+interface WarpAccount {
+  config: string
+  verify: boolean
+}
 
 interface WarpWinner {
   method: WarpMethod
@@ -127,6 +142,18 @@ const DIRECT_TEST_HOSTS = ['www.aparat.com', 'www.digikala.com', 'divar.ir']
 const DIRECT_TEST_URLS = DIRECT_TEST_HOSTS.map((h) => `http://${h}/`)
 /** How long to give sing-box to notice a changed rule-set file before resetting connections. */
 const RULE_RELOAD_DELAY_MS = 1500
+
+/** sing-box's line when a Direct connection to an address couldn't be opened in time. */
+const DIRECT_TIMEOUT = /open connection to (\d+\.\d+\.\d+\.\d+):\d+ using outbound\/direct\[direct\]: dial tcp \S+: i\/o timeout/
+const DIRECT_TIMEOUT_FLUSH_MS = 30_000
+
+async function clashPost(api: ClashApi, path: string): Promise<void> {
+  await fetch(`http://127.0.0.1:${api.port}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${api.secret}` },
+    signal: AbortSignal.timeout(3000)
+  })
+}
 
 async function clashDelete(api: ClashApi, path: string): Promise<void> {
   await fetch(`http://127.0.0.1:${api.port}${path}`, {
@@ -190,9 +217,12 @@ export class Core extends EventEmitter {
    */
   warpHelper?: () => ServerProfile | undefined
   /** Called when a saved WARP config's gateway stopped answering and the scan found another. */
-  onWarpPeer?: (serverId: string, peer: string) => void
+  onWarpPeer?: (serverId: string, peer: string, method: WarpMethod) => void
   /** True while "Find configs" runs; connecting waits for it. */
   private scanningWarp = false
+  private dnsRelay?: DnsRelay
+  /** The real Wi-Fi / Ethernet adapter while connected in a TUN mode. */
+  private realAdapter?: string
   private api?: ClashApi
   private proxyPort?: number
   /** SOCKS port that always exits through the VPN (see BuildOptions.probePort); set while running. */
@@ -302,6 +332,47 @@ export class Core extends EventEmitter {
     return join(this.paths.dataDir, 'warp')
   }
 
+  private get ownWarpAccount(): WarpAccount {
+    return { config: join(this.warpDir, 'aether.toml'), verify: false }
+  }
+
+  private sharedAccountDir(serverId: string): string {
+    return join(this.warpDir, 'shared', serverId)
+  }
+
+  /** The account a config received as a link runs on, written out from its link. */
+  private sharedWarpAccount(server: ServerProfile): WarpAccount {
+    const dir = this.sharedAccountDir(server.id)
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, WARP_IDENTITY_FILE)
+    if (!existsSync(file)) writeFileSync(file, parseWarpShareLink(server.link).identity)
+    return { config: join(dir, 'aether.toml'), verify: true }
+  }
+
+  /** Forgets the account of a received config when the config is deleted. */
+  removeSharedWarpAccount(serverId: string): void {
+    rmSync(this.sharedAccountDir(serverId), { recursive: true, force: true })
+  }
+
+  /**
+   * Makes a share link for a WARP server or config. It gets a new WARP account of its own, so
+   * the person receiving it needs no access to Cloudflare's sign-up service and the sender's own
+   * account stays private. The link is the only copy of that account Bridge keeps.
+   */
+  async shareWarpLink(server: ServerProfile): Promise<string> {
+    if (!isWarp(server) || !server.warp) throw new Error('Not a WARP server')
+    const exe = this.paths.aether
+    if (!exe || !existsSync(exe)) throw new Error('WARP core (aether.exe) not found; reinstall Bridge')
+    const dir = join(this.warpDir, `share-${randomUUID()}`)
+    mkdirSync(dir, { recursive: true })
+    try {
+      await this.registerWarp(() => undefined, dir)
+      return warpShareLink(server.warp, readFileSync(join(dir, WARP_IDENTITY_FILE), 'utf8'), server.name)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
   /** Starts aether.exe, logging its output under `tag`; `onLine` sees each message. */
   private spawnAether(args: string[], tag: string, onLine?: (text: string) => void): ChildProcess {
     const child = spawn(this.paths.aether!, args, { windowsHide: true, cwd: this.warpDir })
@@ -325,15 +396,16 @@ export class Core extends EventEmitter {
    * Starts one WARP attempt; resolves once Aether serves a working tunnel on `port`. `peer` is a
    * saved gateway to use without scanning; `fresh` ignores the last working gateway.
    */
-  private launchWarp(method: WarpMethod, port: number, opts: { peer?: string; timeoutMs?: number; fresh?: boolean } = {}): Promise<WarpWinner> {
+  private launchWarp(method: WarpMethod, port: number, opts: { peer?: string; timeoutMs?: number; fresh?: boolean; account?: WarpAccount } = {}): Promise<WarpWinner> {
     const timeoutMs = opts.timeoutMs ?? WARP_ATTEMPT_MS
+    const account = opts.account ?? this.ownWarpAccount
     return new Promise((resolve, reject) => {
       const t0 = Date.now()
       let won: WarpWinner | undefined
       let exit: string | undefined
       let gateway: string | undefined
       let refused = 0
-      const child = this.spawnAether(warpArgs(method, port, join(this.warpDir, 'aether.toml'), opts.peer, opts.fresh), `warp ${method}`, (text) => {
+      const child = this.spawnAether(warpArgs(method, port, account.config, opts.peer, opts.fresh, account.verify), `warp ${method}`, (text) => {
         // Only Gool checks its exit before serving; the others print it just after.
         if (won) return void (won.exit ??= warpExitCountry(text))
         exit = warpExitCountry(text) ?? exit
@@ -405,12 +477,20 @@ export class Core extends EventEmitter {
     }
   }
 
-  /** Creates the WARP account, trying each way in WARP_REGISTER_TRIES until one works. */
-  private async registerWarp(checkCancelled: () => void): Promise<void> {
-    const config = join(this.warpDir, 'aether.toml')
-    const done = () => existsSync(join(this.warpDir, WARP_IDENTITY_FILE))
-    this.log('Free WARP: creating a WARP account (first use only, can take a few minutes)')
+  /**
+   * Creates a WARP account in `dir`, trying each way in WARP_REGISTER_TRIES until one works.
+   * While connected, the VPN itself is tried first: it reaches a blocked sign-up service.
+   */
+  private async registerWarp(checkCancelled: () => void, dir = this.warpDir): Promise<void> {
+    const config = join(dir, 'aether.toml')
+    const done = () => existsSync(join(dir, WARP_IDENTITY_FILE))
+    this.log(dir === this.warpDir ? 'Free WARP: creating a WARP account (first use only, can take a few minutes)' : 'Free WARP: creating a WARP account for a share link')
     this.progress('Creating a free WARP account (first time only)')
+    if (this.status.state === 'running' && this.probePort) {
+      this.log('Free WARP: creating the account through the VPN')
+      await this.runAether(warpRegisterArgs(config, [], this.probePort), 60_000)
+      if (done()) return this.log('Free WARP: account created')
+    }
     for (const t of WARP_REGISTER_TRIES) {
       const helper = t.via ? await this.startWarpHelper() : undefined
       checkCancelled()
@@ -437,15 +517,18 @@ export class Core extends EventEmitter {
     const exe = this.paths.aether
     if (!exe || !existsSync(exe)) throw new Error('WARP core (aether.exe) not found; reinstall Bridge')
     mkdirSync(this.warpDir, { recursive: true })
-    // One WARP account for every attempt, made once and kept: Cloudflare limits new sign-ups.
-    if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) await this.registerWarp(() => this.checkCancelled(gen))
+    const shared = !!server.warp?.shared
+    // A received config brings its own account. Otherwise one account for every attempt, made
+    // once and kept: Cloudflare limits new sign-ups.
+    const account = shared ? this.sharedWarpAccount(server) : this.ownWarpAccount
+    if (!shared && !existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) await this.registerWarp(() => this.checkCancelled(gen))
     const methods = warpMethods(server.warp)
     const peer = server.warp?.peer
     let winner: WarpWinner | undefined
     if (peer && methods.length === 1) {
       this.log(`Free WARP: connecting with ${warpLabel(methods[0])} on the saved gateway ${peer}`)
       this.progress('Connecting to the saved WARP config')
-      winner = await this.launchWarp(methods[0], await freePort(), { peer, timeoutMs: WARP_PEER_MS }).catch((e) => {
+      winner = await this.launchWarp(methods[0], await freePort(), { peer, timeoutMs: WARP_PEER_MS, account }).catch((e) => {
         this.checkCancelled(gen)
         this.log(`Free WARP: the saved gateway didn't answer (${e instanceof Error ? e.message : e}); scanning for another`, 'warn')
         this.progress("The saved config didn't answer; looking for another way")
@@ -453,8 +536,10 @@ export class Core extends EventEmitter {
       })
       this.checkCancelled(gen)
     }
-    if (!winner) winner = await this.raceWarpMethods(methods, gen)
-    if (peer && winner.peer && winner.peer !== peer) this.onWarpPeer?.(server.id, winner.peer)
+    // What worked on the sender's network may not work on this one, so a received config may
+    // change its method too.
+    if (!winner) winner = await this.raceWarpMethods(shared ? warpMethods({ method: 'auto' }) : methods, gen, account)
+    if (peer && winner.peer && winner.peer !== peer) this.onWarpPeer?.(server.id, winner.peer, winner.method)
     // Stop the attempts that lost the race.
     const won = winner
     const losers = [...this.warpChildren].filter((c) => c !== won.child)
@@ -470,7 +555,7 @@ export class Core extends EventEmitter {
     this.log(`Free WARP connected with ${warpLabel(won.method)}${won.exit ? `, exit ${won.exit}` : ''}${won.peer ? ` via ${won.peer}` : ''} (local SOCKS ${won.port})`)
     if (won.exit === 'IR') {
       this.log(
-        "Free WARP: Cloudflare registers this exit address in Iran. Filtering is still bypassed (the traffic leaves abroad), but sites that block Iranian users may refuse. Gool, which gets a foreign address, didn't get through this time.",
+        'Free WARP: Cloudflare registers this exit address in Iran. Filtering is still bypassed (the traffic leaves abroad), but sites that block Iranian users may refuse. If one does, choose "Auto: exit outside Iran" or a Gool config.',
         'warn'
       )
     }
@@ -478,31 +563,35 @@ export class Core extends EventEmitter {
   }
 
   /** Races `methods` (each on its own port) and returns the winner; see raceWarp. */
-  private async raceWarpMethods(methods: WarpMethod[], gen: number): Promise<WarpWinner> {
+  private async raceWarpMethods(methods: WarpMethod[], gen: number, account = this.ownWarpAccount): Promise<WarpWinner> {
     this.log(`Free WARP: looking for a way through (${methods.map(warpLabel).join(', ')})`)
     this.progress(methods.length > 1 ? `Finding a way through your network (trying ${methods.length} at once)` : `Connecting with ${warpLabel(methods[0])}`)
     const attempts = await Promise.all(methods.map(async (method) => ({ method, port: await freePort() })))
     const state = this.readWarpState()
-    const triesGool = methods.length > 1 && methods.some(prefersForeignExit)
-    const wait = triesGool && waitForGool(state)
-    if (triesGool && !wait) this.log(`Free WARP: Gool didn't get through recently, so Bridge takes the first way that works (Gool gets waited for again after ${GOOL_RETRY_MS / 3_600_000} h)`)
+    // Which method is worth a short wait: Gool in "exit outside Iran", otherwise HTTP/3, the fastest.
+    const prefer = methods.length < 2 ? undefined : (methods.find(prefersForeignExit) ?? methods.find((m) => m === 'h3'))
+    const foreign = !!prefer && prefersForeignExit(prefer)
+    const wait = !!prefer && (foreign ? waitForGool(state) : waitForH3(state))
+    if (prefer && !wait) this.log(`Free WARP: ${foreign ? 'Gool' : 'HTTP/3'} didn't get through recently, so Bridge takes the first way that works (it gets waited for again after ${GOOL_RETRY_MS / 3_600_000} h)`)
     let winner: WarpWinner
     try {
-      winner = await this.raceWarp(attempts, wait)
+      winner = await this.raceWarp(attempts, wait ? prefer : undefined, account)
     } catch (e) {
       this.checkCancelled(gen)
       const reasons = e instanceof AggregateError ? e.errors.map((x) => (x instanceof Error ? x.message : String(x))) : [String(e)]
       throw new Error(`Free WARP could not connect on this network. ${reasons.join('; ')}`)
     }
-    if (triesGool && prefersForeignExit(winner.method)) this.writeWarpState({ ...state, goolMissedAt: undefined })
-    else if (wait) this.writeWarpState({ ...state, goolMissedAt: Date.now() })
+    const missedKey = foreign ? 'goolMissedAt' : 'h3MissedAt'
+    if (prefer && winner.method === prefer) this.writeWarpState({ ...state, [missedKey]: undefined })
+    else if (wait) this.writeWarpState({ ...state, [missedKey]: Date.now() })
     return winner
   }
 
   /**
-   * "Find configs": runs every Auto method at once on the real network (Bridge must be
-   * disconnected) and returns each one that carries traffic, with the gateway it used. Each
-   * method is stopped as soon as it has proved itself.
+   * "Find configs": runs every method at once on the real network (Bridge must be disconnected)
+   * and keeps each one that carries traffic, with the gateway it used and its measured speed.
+   * Then it looks for further gateways on the methods that work, so there are several to choose
+   * from. Each tunnel is stopped as soon as it has been measured.
    */
   async findWarpConfigs(): Promise<WarpFound[]> {
     if (this.status.state !== 'stopped') throw new Error('Disconnect first: configs are tested on your own network, not through the VPN')
@@ -516,24 +605,44 @@ export class Core extends EventEmitter {
         if (this.status.state !== 'stopped') throw new Cancelled()
       }
       if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) await this.registerWarp(stopped)
-      const methods = warpMethods({ method: 'auto' })
-      this.log(`Free WARP: finding configs (${methods.map(warpLabel).join(', ')})`)
-      const results = await Promise.allSettled(
-        methods.map(async (method) => {
-          const w = await this.launchWarp(method, await freePort(), { fresh: true })
+      const found = new Map<string, WarpFound>()
+      // One speed test at a time, or the tunnels would compete for the line and every number would be wrong.
+      let speedTurn: Promise<unknown> = Promise.resolve()
+      const tryMethod = async (method: WarpMethod, timeoutMs?: number): Promise<void> => {
+        const w = await this.launchWarp(method, await freePort(), { fresh: true, timeoutMs })
+        try {
           // Give the exit-country line, printed just after the tunnel is up, a moment.
           for (let i = 0; i < 25 && !w.exit; i++) await new Promise((r) => setTimeout(r, 200))
+          if (!w.peer) throw new Error(`${warpLabel(method)}: no gateway in the log`)
+          const key = `${method}@${w.peer}`
+          // Another look can land on a gateway it already has.
+          if (found.has(key) || found.size >= WARP_FIND_MAX) return
+          const entry: WarpFound = { method, peer: w.peer, exit: w.exit, readyMs: w.readyMs }
+          found.set(key, entry)
+          const speed = speedTurn.then(() => quickSpeed(w.port))
+          speedTurn = speed.catch(() => undefined)
+          Object.assign(entry, await speed)
+          entry.exit ??= w.exit
+          this.log(`Free WARP: ${warpLabel(method)} works on ${w.peer}${w.exit ? `, exit ${w.exit}` : ''} (${(w.readyMs / 1000).toFixed(1)} s, down ${entry.downMbps ?? '?'} / up ${entry.upMbps ?? '?'} Mbps)`)
+        } finally {
           this.warpChildren.delete(w.child)
           await killProcess(w.child)
-          if (!w.peer) throw new Error(`${warpLabel(method)}: no gateway in the log`)
-          this.log(`Free WARP: ${warpLabel(method)} works on ${w.peer}${w.exit ? `, exit ${w.exit}` : ''} (${(w.readyMs / 1000).toFixed(1)} s)`)
-          return { method, peer: w.peer, exit: w.exit, readyMs: w.readyMs } satisfies WarpFound
-        })
-      )
-      const found = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
-      for (const r of results) if (r.status === 'rejected') this.log(`Free WARP: ${r.reason instanceof Error ? r.reason.message : r.reason}`)
-      this.log(`Free WARP: ${found.length} config${found.length === 1 ? '' : 's'} found`)
-      return found
+        }
+      }
+      this.log(`Free WARP: finding configs (${WARP_FIND_METHODS.map(warpLabel).join(', ')})`)
+      const first = await Promise.allSettled(WARP_FIND_METHODS.map((m) => tryMethod(m)))
+      for (const r of first) if (r.status === 'rejected') this.log(`Free WARP: ${r.reason instanceof Error ? r.reason.message : r.reason}`)
+      stopped()
+      const working = WARP_FIND_METHODS.filter((_, i) => first[i].status === 'fulfilled')
+      // Gool's second account now exists, so Gool over HTTP/3 can't race it to make one.
+      if (working.includes('gool') && working.includes('h3')) working.push('gool-h3')
+      const deadline = Date.now() + WARP_FIND_MORE_MS
+      for (let round = 0; round < WARP_FIND_ROUNDS && working.length && found.size < WARP_FIND_MAX && Date.now() < deadline; round++) {
+        await Promise.allSettled(working.map((m) => tryMethod(m, WARP_FIND_ATTEMPT_MS)))
+        stopped()
+      }
+      this.log(`Free WARP: ${found.size} config${found.size === 1 ? '' : 's'} found`)
+      return [...found.values()]
     } finally {
       this.scanningWarp = false
     }
@@ -556,12 +665,13 @@ export class Core extends EventEmitter {
   }
 
   /**
-   * Runs the WARP attempts at the same time. Gool wins outright; when another method works first,
-   * Gool still gets WARP_PREFER_WAIT_MS to finish (if `waitForGool`), and the other one is used if it doesn't.
+   * Runs the WARP attempts at the same time. The first that works wins, unless `prefer` is still
+   * running: then it gets a little longer (Gool WARP_PREFER_WAIT_MS, HTTP/3 WARP_PREFER_H3_MS),
+   * wins outright if it makes it, and the first one is used if it doesn't.
    */
-  private raceWarp(attempts: { method: WarpMethod; port: number }[], waitForGool = true): Promise<WarpWinner> {
+  private raceWarp(attempts: { method: WarpMethod; port: number }[], prefer: WarpMethod | undefined, account: WarpAccount): Promise<WarpWinner> {
     return new Promise((resolve, reject) => {
-      const preferred = new Set(waitForGool ? attempts.filter((a) => prefersForeignExit(a.method)).map((a) => a.method) : [])
+      let waitingFor = prefer
       const errors: unknown[] = []
       let settled = 0
       let fallback: WarpWinner | undefined
@@ -574,23 +684,24 @@ export class Core extends EventEmitter {
         resolve(w)
       }
       for (const a of attempts) {
-        this.launchWarp(a.method, a.port).then(
+        this.launchWarp(a.method, a.port, { account }).then(
           (w) => {
             settled++
-            preferred.delete(a.method)
-            if (prefersForeignExit(a.method)) return finish(w)
+            if (a.method === prefer) return finish(w)
             if (fallback) return
             fallback = w
-            if (!preferred.size) return finish(w)
-            this.log(`Free WARP: ${warpLabel(a.method)} works; waiting up to ${WARP_PREFER_WAIT_MS / 1000} s for Gool, which exits outside Iran`)
-            this.progress('Found a way. Giving Gool a few seconds for an exit outside Iran')
-            wait = setTimeout(() => finish(w), WARP_PREFER_WAIT_MS)
+            if (!waitingFor) return finish(w)
+            const gool = prefersForeignExit(waitingFor)
+            const ms = gool ? WARP_PREFER_WAIT_MS : WARP_PREFER_H3_MS
+            this.log(`Free WARP: ${warpLabel(a.method)} works; waiting up to ${ms / 1000} s for ${gool ? 'Gool, which exits outside Iran' : 'HTTP/3, the fastest'}`)
+            this.progress(gool ? 'Found a way. Giving Gool a few seconds for an exit outside Iran' : 'Found a way. Giving HTTP/3, the fastest, a few seconds')
+            wait = setTimeout(() => finish(w), ms)
           },
           (e) => {
             settled++
-            preferred.delete(a.method)
+            if (a.method === waitingFor) waitingFor = undefined
             errors.push(e)
-            if (fallback && !preferred.size) return finish(fallback)
+            if (fallback && !waitingFor) return finish(fallback)
             if (settled === attempts.length && !fallback && !done) {
               done = true
               reject(new AggregateError(errors))
@@ -625,11 +736,28 @@ export class Core extends EventEmitter {
   private directSource?: string
   private directIps: Record<string, string> = {}
 
+  private directTimeoutFlushedAt = 0
+
+  /**
+   * An address timed out on the direct network: the DNS relay stops offering it, and the DNS caches
+   * are cleared so apps ask again and get another one (at most every so often, because clearing
+   * them makes the next lookups slower).
+   */
+  private onDirectTimeout(ip: string): void {
+    if (!this.dnsRelay?.markUnreachable(ip)) return
+    if (Date.now() - this.directTimeoutFlushedAt < DIRECT_TIMEOUT_FLUSH_MS) return
+    this.directTimeoutFlushedAt = Date.now()
+    if (this.api) void clashPost(this.api, '/cache/dns/flush').catch(() => undefined)
+    void flushDns()
+  }
+
   private coreLine = (line: string, isErr: boolean) => {
     const level: LogLine['level'] = /\b(ERROR|FATAL)\b/.test(line) ? 'error' : /\bWARN\b/.test(line) ? 'warn' : isErr ? 'warn' : 'info'
     // sing-box prints ANSI colors; strip them for the UI.
     const text = line.replace(/\x1b\[[0-9;]*m/g, '')
     this.log(text, level)
+    const timedOut = text.match(DIRECT_TIMEOUT)?.[1]
+    if (timedOut) this.onDirectTimeout(timedOut)
     // 10.10.34.x is Iran's block page. Bridge's own DNS never answers with it, so an app
     // connecting there took the answer from the ISP's DNS (Windows asks every adapter's DNS
     // server, and without Strict mode the ISP's reply can win). Such an app can't reach the
@@ -671,8 +799,19 @@ export class Core extends EventEmitter {
         usesWarp ? this.viaWarp(server, gen) : usesXray ? (this.progress('Starting Xray'), this.viaXray(server, tun ? net.interfaceAlias : undefined)) : this.pinAddress(server)
       ])
       this.checkCancelled(gen)
-      if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? 'DNS-over-HTTPS' : 'DNS'} ${localDns.server}`)
+      if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? `DNS-over-HTTPS ${localDns.working?.join(', ')}` : `DNS ${localDns.server}`}`)
       else if (tun) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
+      if (localDns?.working?.length) {
+        // Answers every app's lookups, so one stalled connection can't hold them all up (see dnsrelay.ts).
+        this.dnsRelay = new DnsRelay({
+          servers: localDns.working.map((host) => ({ host })),
+          localAddress: adapterIpv4(net.interfaceAlias),
+          proxyPort: () => this.probePort,
+          log
+        })
+      }
+      const dnsRelayPort = await this.dnsRelay?.start()
+      this.realAdapter = tun ? net.interfaceAlias : undefined
       if (tun && settings.strictRoute && localDns?.type !== 'https') this.log('DNS-over-HTTPS is not reachable on this network, so Strict mode stays off for this connection', 'warn')
       // With other tunnels up, pin Bridge's own traffic to the real adapter so it never
       // leaves through (or fights with) another tool's tunnel.
@@ -694,6 +833,7 @@ export class Core extends EventEmitter {
         cacheFile: join(this.paths.dataDir, 'cache.db'),
         appRulesDir: this.appRulesDir,
         localDns,
+        dnsRelayPort,
         // xray.exe's traffic (a safety net; it is bound to the real adapter) and aether.exe's
         // (which can't be bound on Windows, so it does reach TUN) must not loop back into the VPN.
         bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : usesWarp && this.paths.aether ? [this.paths.aether] : undefined,
@@ -897,6 +1037,9 @@ export class Core extends EventEmitter {
   }
 
   private async cleanup(): Promise<void> {
+    this.dnsRelay?.stop()
+    this.dnsRelay = undefined
+    this.realAdapter = undefined
     this.probePort = undefined
     this.wonWarp = undefined
     if (this.statsTimer) clearInterval(this.statsTimer)
@@ -1045,7 +1188,8 @@ export class Core extends EventEmitter {
     for (const s of testable.filter(isXray)) xrayEntries.push({ id: s.id, port: await freePort(), outbound: await this.pinXray(s.xray as XrayOutbound, true) })
     if (xrayEntries.length) {
       try {
-        xrayTest = await this.launchXray(xrayEntries, 'xray-latency-test')
+        // Bound to the real adapter while connected, or every test connection goes through TUN too.
+        xrayTest = await this.launchXray(xrayEntries, 'xray-latency-test', this.realAdapter)
         const ports = new Map(xrayEntries.map((e) => [e.id, e.port]))
         testable = testable.map((s) => (ports.has(s.id) ? { ...s, outbound: socksOutbound(ports.get(s.id)!) } : s))
       } catch (e) {
