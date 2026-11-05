@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Check, ChevronRight, ClipboardPaste, Cloud, Copy, Ellipsis, FileText, Globe, KeyRound, Link2, LoaderCircle, Plus, RefreshCw, Repeat, Server as ServerIcon, Share2, Trash2, TriangleAlert, Zap } from 'lucide-react'
-import { WARP_METHODS, type AppState, type ImportResult, type ServerProfile, type Subscription, type WarpOptions } from '../../../shared/types'
+import { PSIPHON_REGIONS, WARP_METHODS, type AppState, type ImportResult, type ServerProfile, type Subscription, type WarpOptions } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { ago, bytes } from '../format'
 import { cn } from '@/lib/utils'
@@ -132,6 +132,7 @@ export function Servers({ state, status, run }: PageProps) {
             server={warp}
             configs={warpConfigs}
             plus={!!state.warpPlus}
+            psiphon={state.settings.warpPsiphon}
             selectedId={state.settings.autoServer ? undefined : state.selectedServerId}
             connected={status.state !== 'stopped'}
             run={run}
@@ -566,6 +567,7 @@ function WarpCard({
   server: s,
   configs,
   plus,
+  psiphon,
   selectedId,
   connected,
   run
@@ -573,6 +575,7 @@ function WarpCard({
   server: ServerProfile
   configs: ServerProfile[]
   plus: boolean
+  psiphon: string
   selectedId?: string
   connected: boolean
   run: PageProps['run']
@@ -589,11 +592,20 @@ function WarpCard({
     setFinding(false)
   }
   const method = s.warp?.method ?? 'auto'
-  const hint =
-    method === 'auto'
+  // Psiphon is one more choice of the same menu; under it, the WARP method still runs the first part.
+  const choice = psiphon ? 'psiphon' : method
+  const choose = (v: string) =>
+    run(async () => {
+      if (v === 'psiphon') return api.updateSettings({ warpPsiphon: psiphon || 'auto' })
+      if (psiphon) await api.updateSettings({ warpPsiphon: '' })
+      await api.setWarpMethod(s.id, v as WarpOptions['method'])
+    })
+  const hint = psiphon
+    ? t('WARP from Iran usually exits in Iran, even with two hops. Psiphon, carried inside WARP, leaves from another country, so sites that refuse Iranian users open. It is slower, connecting takes up to a minute and a half longer, and calls and games that use UDP may not work. The traffic passes through the Psiphon network.')
+    : method === 'auto'
       ? t('Tries every fast way at once and keeps the fastest that works. The exit is usually registered in Iran: filtering is bypassed, but sites that block Iranian users may refuse.')
       : method === 'auto-foreign'
-        ? t("Also tries Gool and waits for it, because its exit is outside Iran. Connecting takes longer and the speed is much lower, upload most of all. If Gool misses, the next connects for a few hours don't wait for it.")
+        ? t("Also tries two ways with two hops and waits for them, because their exit is outside Iran. Connecting takes longer, up to a minute, and the speed is lower. If neither gets through it connects another way, with an exit in Iran, and for half an hour doesn't wait for them.")
         : t(WARP_METHODS.find((m) => m.id === method)?.hint ?? '')
   return (
     <Card className={cn(selected && 'border-brand/50')}>
@@ -641,13 +653,14 @@ function WarpCard({
       <CardContent className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-3">
           <Label className="text-sm">{t('Connection method')}</Label>
-          <Select value={method} onValueChange={(v) => run(() => api.setWarpMethod(s.id, v as WarpOptions['method']))}>
-            <SelectTrigger className="w-60">
+          <Select value={choice} onValueChange={choose}>
+            <SelectTrigger className="w-60 min-w-0 [&>span]:truncate">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="auto">{t('Auto: fastest (recommended)')}</SelectItem>
               <SelectItem value="auto-foreign">{t('Auto: exit outside Iran')}</SelectItem>
+              <SelectItem value="psiphon">{t('WARP + Psiphon')}</SelectItem>
               {WARP_METHODS.map((m) => (
                 <SelectItem key={m.id} value={m.id}>
                   {t(m.label)}
@@ -655,6 +668,24 @@ function WarpCard({
               ))}
             </SelectContent>
           </Select>
+          {psiphon && (
+            <Select value={psiphon} onValueChange={(v) => run(() => api.updateSettings({ warpPsiphon: v }))}>
+              <SelectTrigger className="w-36" aria-label={t('Exit country')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">{t('Any country')}</SelectItem>
+                {PSIPHON_REGIONS.map((code) => (
+                  <SelectItem key={code} value={code}>
+                    <span className="flex items-center gap-2">
+                      <Flag code={code} className="h-3 w-4" />
+                      {code}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
         <p className="text-muted-foreground text-xs">{hint}</p>
 

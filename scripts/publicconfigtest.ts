@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Core } from '../src/main/core'
 import { parseLink } from '../src/main/parser'
-import { choosePublicCandidates, fetchPublicLinks, isPrivateAddress, middleOf, PUBLIC_CLEAN_LIST, PUBLIC_KEEP, PUBLIC_SOURCE_LISTS, publicRefusal, rankPublic, spreadOut } from '../src/main/publicconfigs'
+import { choosePublicCandidates, fetchPublicLinks, isPrivateAddress, middleOf, PUBLIC_CLEAN_LIST, PUBLIC_CLOUDFLARE_LIST, PUBLIC_KEEP, PUBLIC_SOURCE_LISTS, publicRefusal, rankPublic, spreadOut } from '../src/main/publicconfigs'
 import { DEFAULT_SETTINGS } from '../src/main/store'
 
 const root = join(__dirname, '..')
@@ -63,7 +63,7 @@ function offline() {
   const ranked = rankPublic([{ downMbps: 90, latency: 2500 }, { downMbps: 5, latency: 100 }, { downMbps: 40, latency: 900 }, { latency: 50 }, { downMbps: 40, latency: 300 }])
   check(ranked.map((f) => `${f.downMbps}/${f.latency}`).join() === '40/300,40/900,5/100,undefined/50,90/2500', `speed decides, ties go by ping, a very slow ping goes last (${ranked.map((f) => `${f.downMbps}/${f.latency}`).join(', ')})`)
   check(middleOf([900, 120, 150]) === 150 && middleOf([100, 300]) === 100, 'one odd ping does not count')
-  check([PUBLIC_CLEAN_LIST, ...PUBLIC_SOURCE_LISTS].every((urls) => urls.length === 2 && urls[0].startsWith('https://raw.githubusercontent.com/') && urls[1].startsWith('https://cdn.jsdelivr.net/gh/')), 'every list has a second place to download it')
+  check([PUBLIC_CLEAN_LIST, PUBLIC_CLOUDFLARE_LIST, ...PUBLIC_SOURCE_LISTS].every((urls) => urls.length === 2 && urls[0].startsWith('https://raw.githubusercontent.com/') && urls[1].startsWith('https://cdn.jsdelivr.net/gh/')), 'every list has a second place to download it')
 }
 
 async function fallback() {
@@ -77,7 +77,7 @@ async function fallback() {
     },
     () => undefined
   )
-  check(asked.filter((u) => u.includes('jsdelivr')).length === PUBLIC_SOURCE_LISTS.length + 1, 'a blocked GitHub falls back to the CDN')
+  check(asked.filter((u) => u.includes('jsdelivr')).length === PUBLIC_SOURCE_LISTS.length + 2, 'a blocked GitHub falls back to the CDN')
   check(links.links.length === 2 && links.clean.length === 2, 'the same link from several lists counts once, and the clean list is told apart')
   check((await fetchPublicLinks(() => Promise.reject(new Error('blocked')), () => undefined)).links.length === 0, 'nothing reachable gives no links instead of an error')
 }

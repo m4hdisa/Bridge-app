@@ -45,6 +45,7 @@ const SAMPLES: Record<string, string> = {
 const settings: Settings = {
   mode: 'tun',
   buttonStyle: 'dashboard',
+  warpPsiphon: '',
   autoPing: false,
   autoServer: false,
   showInDiscord: false,

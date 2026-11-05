@@ -55,7 +55,7 @@ export const fa: Record<string, string> = {
   'Connecting to the saved WARP config': 'در حال اتصال با کانفیگ ذخیره‌شده‌ی WARP',
   "The saved config didn't answer; looking for another way": 'کانفیگ ذخیره‌شده پاسخ نداد؛ در حال پیدا کردن راه دیگر',
   'Finding a way through your network (trying {n} at once)': 'در حال پیدا کردن راه عبور از شبکه‌ی شما ({n} روش هم‌زمان)',
-  'Found a way. Giving Gool a few seconds for an exit outside Iran': 'راهی پیدا شد. چند ثانیه به Gool فرصت می‌دهیم تا خروجی خارج از ایران بگیرد',
+  'Found a way. Waiting a little longer for an exit outside Iran': 'راهی پیدا شد. کمی بیشتر منتظر خروجی خارج از ایران می‌مانیم',
   'Connecting with {method}': 'در حال اتصال با {method}',
   'Starting Xray': 'در حال اجرای Xray',
   'Starting the VPN': 'در حال اجرای VPN',
@@ -220,11 +220,21 @@ export const fa: Record<string, string> = {
   'Auto: exit outside Iran': 'خودکار: خروجی خارج از ایران',
   'Tries every fast way at once and keeps the fastest that works. The exit is usually registered in Iran: filtering is bypassed, but sites that block Iranian users may refuse.':
     'همه‌ی روش‌های سریع را هم‌زمان امتحان می‌کند و سریع‌ترینی که کار کند را نگه می‌دارد. خروجی معمولاً به نام ایران ثبت شده: فیلتر دور زده می‌شود، ولی سایت‌هایی که کاربران ایرانی را مسدود می‌کنند ممکن است باز نشوند.',
-  "Also tries Gool and waits for it, because its exit is outside Iran. Connecting takes longer and the speed is much lower, upload most of all. If Gool misses, the next connects for a few hours don't wait for it.":
-    'Gool را هم امتحان می‌کند و منتظرش می‌ماند، چون خروجی‌اش خارج از ایران است. اتصال بیشتر طول می‌کشد و سرعت خیلی کمتر است، مخصوصاً آپلود. اگر Gool نرسد، تا چند ساعت اتصال‌های بعدی منتظرش نمی‌مانند.',
+  "Also tries two ways with two hops and waits for them, because their exit is outside Iran. Connecting takes longer, up to a minute, and the speed is lower. If neither gets through it connects another way, with an exit in Iran, and for half an hour doesn't wait for them.":
+    'دو روش دو مرحله‌ای را هم امتحان می‌کند و منتظرشان می‌ماند، چون خروجی‌شان خارج از ایران است. اتصال بیشتر طول می‌کشد، تا یک دقیقه، و سرعت کمتر است. اگر هیچ‌کدام نرسند، از راه دیگری با خروجی ایران وصل می‌شود و تا نیم ساعت منتظرشان نمی‌ماند.',
+  'MASQUE in MASQUE over HTTP/2': 'MASQUE داخل MASQUE روی HTTP/2',
+  'MASQUE in MASQUE over HTTP/3': 'MASQUE داخل MASQUE روی HTTP/3',
+  'Exits outside Iran another way: a second MASQUE hop inside the first, over TCP. Slower than a single tunnel.': 'راه دیگری برای خروجی خارج از ایران: یک مرحله‌ی MASQUE دیگر داخل اولی، روی TCP. از تونل تکی کندتر است.',
+  'Exits outside Iran another way: a second MASQUE hop inside the first. Needs UDP, which some networks block.': 'راه دیگری برای خروجی خارج از ایران: یک مرحله‌ی MASQUE دیگر داخل اولی. به UDP نیاز دارد که بعضی شبکه‌ها مسدود می‌کنند.',
   'Found a way. Giving HTTP/3, the fastest, a few seconds': 'راهی پیدا شد. چند ثانیه به HTTP/3 که سریع‌ترین است فرصت می‌دهیم',
   "This address is a web page, not a subscription. If it is a panel, copy the subscription link from inside it; Bridge couldn't find one by itself": 'این آدرس یک صفحه‌ی وب است، نه اشتراک. اگر پنل است، لینک اشتراک را از داخل آن کپی کنید؛ Bridge خودش لینکی پیدا نکرد',
   "This subscription only has WireGuard (WARP) configs, which Bridge doesn't import. Use Bridge's Free WARP instead": 'این اشتراک فقط کانفیگ WireGuard (WARP) دارد که Bridge آن را وارد نمی‌کند. به‌جایش از WARP رایگان خود Bridge استفاده کنید',
+  'WARP + Psiphon': 'WARP + Psiphon',
+  'Exit country': 'کشور خروجی',
+  'Any country': 'هر کشوری',
+  'WARP from Iran usually exits in Iran, even with two hops. Psiphon, carried inside WARP, leaves from another country, so sites that refuse Iranian users open. It is slower, connecting takes up to a minute and a half longer, and calls and games that use UDP may not work. The traffic passes through the Psiphon network.':
+    'WARP از ایران معمولاً خروجی ایران می‌گیرد، حتی با دو مرحله. Psiphon که داخل WARP اجرا می‌شود از کشور دیگری بیرون می‌رود، پس سایت‌هایی که کاربر ایرانی را قبول نمی‌کنند باز می‌شوند. کندتر است، اتصال تا یک دقیقه و نیم بیشتر طول می‌کشد و تماس‌ها و بازی‌هایی که از UDP استفاده می‌کنند ممکن است کار نکنند. ترافیک از شبکه‌ی Psiphon رد می‌شود.',
+  'Connecting Psiphon through WARP for an exit outside Iran': 'در حال وصل کردن Psiphon از داخل WARP برای خروجی خارج از ایران',
   'WARP+ key': 'کلید WARP+',
   Active: 'فعال',
   Activate: 'فعال‌سازی',

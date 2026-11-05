@@ -10,7 +10,7 @@ import { networkInterfaces } from 'node:os'
 import { DnsRelay } from './dnsrelay'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
-import { GOOL_RETRY_MS, isWarp, parseWarpLine, parseWarpShareLink, prefersForeignExit, WARP_EXIT_REFUSED, WARP_FIND_METHODS, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, waitForH3, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, warpRegisterArgs, warpShareLink, type WarpState } from './warp'
+import { GOOL_RETRY_MS, isWarp, parseWarpLine, parseWarpShareLink, prefersForeignExit, WARP_EXIT_REFUSED, WARP_FIND_METHODS, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, waitForH3, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, type PsiphonChain, warpRegisterArgs, warpShareLink, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, hasInternetIpv6, networkInfo, setHostRoutes, setSystemProxy } from './system'
 import { handoffCandidates } from './handoff'
 import { findPathMtu, MTU_TARGETS } from './mtu'
@@ -29,6 +29,8 @@ export interface CorePaths {
   manageSystemProxy?: boolean
   /** xray.exe, for servers only Xray can run. */
   xray?: string
+  /** psiphon-tunnel-core.exe, which Aether runs inside WARP for an exit outside Iran. */
+  psiphon?: string
   /** aether.exe, for the built-in free WARP server. */
   aether?: string
 }
@@ -124,7 +126,9 @@ const WARP_ATTEMPT_MS = 75_000
 /** How long a saved config's gateway gets to answer before Bridge scans for another. */
 const WARP_PEER_MS = 25_000
 /** Once another method works, how long Auto still waits for Gool (whose exit is outside Iran). */
-const WARP_PREFER_WAIT_MS = 30_000
+const WARP_PREFER_WAIT_MS = 60_000
+/** How long Psiphon gets, once WARP is up, to carry a first HTTPS request. */
+const PSIPHON_READY_MS = 90_000
 /** Once HTTP/2 works, how long Auto still waits for HTTP/3 (about twice as fast). */
 const WARP_PREFER_H3_MS = 8_000
 /** "Find configs" looks for further gateways on the methods that work, within these limits. */
@@ -149,6 +153,8 @@ interface WarpWinner {
   /** The Cloudflare gateway the tunnel runs on, "ip:port". */
   peer?: string
   readyMs: number
+  /** Psiphon's local SOCKS port, when it rides inside this tunnel. */
+  psiphonPort?: number
 }
 /**
  * Iranian sites for the Direct internet check (see probeDirect). The ping is how long opening
@@ -413,16 +419,18 @@ export class Core extends EventEmitter {
    * Starts one WARP attempt; resolves once Aether serves a working tunnel on `port`. `peer` is a
    * saved gateway to use without scanning; `fresh` ignores the last working gateway.
    */
-  private launchWarp(method: WarpMethod, port: number, opts: { peer?: string; timeoutMs?: number; fresh?: boolean; account?: WarpAccount } = {}): Promise<WarpWinner> {
+  private async launchWarp(method: WarpMethod, port: number, opts: { peer?: string; timeoutMs?: number; fresh?: boolean; account?: WarpAccount } = {}): Promise<WarpWinner> {
     const timeoutMs = opts.timeoutMs ?? WARP_ATTEMPT_MS
     const account = opts.account ?? this.ownWarpAccount
+    // Finding configs measures WARP itself, so Psiphon only rides along when connecting.
+    const psiphon = this.psiphonChain && !opts.fresh ? { ...this.psiphonChain, port: await freePort() } : undefined
     return new Promise((resolve, reject) => {
       const t0 = Date.now()
       let won: WarpWinner | undefined
       let exit: string | undefined
       let gateway: string | undefined
       let refused = 0
-      const child = this.spawnAether(warpArgs(method, port, account.config, opts.peer, opts.fresh, account.verify), `warp ${method}`, (text) => {
+      const child = this.spawnAether(warpArgs(method, port, account.config, opts.peer, opts.fresh, account.verify, psiphon), `warp ${method}`, (text) => {
         // Only Gool checks its exit before serving; the others print it just after.
         if (won) return void (won.exit ??= warpExitCountry(text))
         exit = warpExitCountry(text) ?? exit
@@ -440,7 +448,7 @@ export class Core extends EventEmitter {
         }
         if (!warpReady(text, port)) return
         clearTimeout(timer)
-        resolve((won = { method, port, child, exit, peer: gateway, readyMs: Date.now() - t0 }))
+        resolve((won = { method, port, child, exit, peer: gateway, readyMs: Date.now() - t0, psiphonPort: psiphon?.port }))
       })
       const timer = setTimeout(() => {
         child.kill()
@@ -546,6 +554,41 @@ export class Core extends EventEmitter {
    * its own port) and the first one that carries real traffic wins; the others are stopped.
    */
   private async viaWarp(server: ServerProfile, gen: number): Promise<ServerProfile> {
+    const choice = this.settings?.warpPsiphon
+    if (!choice) return this.viaWarpAlone(server, gen)
+    const bin = this.paths.psiphon
+    if (!bin || !existsSync(bin)) throw new Error('Psiphon (psiphon-tunnel-core.exe) not found; reinstall Bridge')
+    this.psiphonChain = { bin, region: choice === 'auto' ? undefined : choice }
+    let tunnel: ServerProfile
+    try {
+      // Psiphon is there for the exit, so a second WARP hop would only cost speed.
+      const single = warpMethods(server.warp).filter((m) => !prefersForeignExit(m))
+      tunnel = await this.viaWarpAlone(single.length ? server : { ...server, warp: { method: 'auto' } }, gen)
+    } finally {
+      this.psiphonChain = undefined
+    }
+    const port = this.wonWarp?.psiphonPort
+    if (!port) throw new Error('Psiphon did not start inside WARP')
+    this.log(`Free WARP: connecting Psiphon through WARP${choice === 'auto' ? '' : `, asking for an exit in ${choice}`}`)
+    this.progress('Connecting Psiphon through WARP for an exit outside Iran')
+    const deadline = Date.now() + PSIPHON_READY_MS
+    while (Date.now() < deadline) {
+      this.checkCancelled(gen)
+      const exit = await quickExit(port).catch(() => undefined)
+      if (exit) {
+        this.log(`Free WARP: Psiphon connected, exit ${exit} (local SOCKS ${port})`)
+        if (this.wonWarp) this.wonWarp.exit = exit
+        return { ...tunnel, outbound: socksOutbound(port) }
+      }
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+    throw new Error(`Psiphon didn't connect through WARP within ${PSIPHON_READY_MS / 1000} s. Choose another connection method to use WARP alone.`)
+  }
+
+  /** Set while connecting with Psiphon inside WARP: every WARP attempt then carries it. */
+  private psiphonChain?: Omit<PsiphonChain, 'port'>
+
+  private async viaWarpAlone(server: ServerProfile, gen: number): Promise<ServerProfile> {
     const exe = this.paths.aether
     if (!exe || !existsSync(exe)) throw new Error('WARP core (aether.exe) not found; reinstall Bridge')
     mkdirSync(this.warpDir, { recursive: true })
@@ -614,7 +657,7 @@ export class Core extends EventEmitter {
       throw new Error(`Free WARP could not connect on this network. ${reasons.join('; ')}`)
     }
     const missedKey = foreign ? 'goolMissedAt' : 'h3MissedAt'
-    if (prefer && winner.method === prefer) this.writeWarpState({ ...state, [missedKey]: undefined })
+    if (prefer && (winner.method === prefer || (foreign && prefersForeignExit(winner.method)))) this.writeWarpState({ ...state, [missedKey]: undefined })
     else if (wait) this.writeWarpState({ ...state, [missedKey]: Date.now() })
     return winner
   }
@@ -668,6 +711,7 @@ export class Core extends EventEmitter {
       const working = WARP_FIND_METHODS.filter((_, i) => first[i].status === 'fulfilled')
       // Gool's second account now exists, so Gool over HTTP/3 can't race it to make one.
       if (working.includes('gool') && working.includes('h3')) working.push('gool-h3')
+      if (working.includes('mim-h2') && working.includes('h3')) working.push('mim')
       const deadline = Date.now() + WARP_FIND_MORE_MS
       for (let round = 0; round < WARP_FIND_ROUNDS && working.length && found.size < WARP_FIND_MAX && Date.now() < deadline; round++) {
         await Promise.allSettled(working.map((m) => tryMethod(m, WARP_FIND_ATTEMPT_MS)))
@@ -893,7 +937,9 @@ export class Core extends EventEmitter {
    */
   private raceWarp(attempts: { method: WarpMethod; port: number }[], prefer: WarpMethod | undefined, account: WarpAccount): Promise<WarpWinner> {
     return new Promise((resolve, reject) => {
-      let waitingFor = prefer
+      // With a foreign exit in mind, any method with two hops will do.
+      const foreign = !!prefer && prefersForeignExit(prefer)
+      const wanted = new Set(attempts.map((a) => a.method).filter((m) => m === prefer || (foreign && prefersForeignExit(m))))
       const errors: unknown[] = []
       let settled = 0
       let fallback: WarpWinner | undefined
@@ -909,21 +955,21 @@ export class Core extends EventEmitter {
         this.launchWarp(a.method, a.port, { account }).then(
           (w) => {
             settled++
-            if (a.method === prefer) return finish(w)
+            if (wanted.has(a.method)) return finish(w)
             if (fallback) return
             fallback = w
-            if (!waitingFor) return finish(w)
-            const gool = prefersForeignExit(waitingFor)
+            if (!wanted.size) return finish(w)
+            const gool = foreign
             const ms = gool ? WARP_PREFER_WAIT_MS : WARP_PREFER_H3_MS
-            this.log(`Free WARP: ${warpLabel(a.method)} works; waiting up to ${ms / 1000} s for ${gool ? 'Gool, which exits outside Iran' : 'HTTP/3, the fastest'}`)
-            this.progress(gool ? 'Found a way. Giving Gool a few seconds for an exit outside Iran' : 'Found a way. Giving HTTP/3, the fastest, a few seconds')
+            this.log(`Free WARP: ${warpLabel(a.method)} works; waiting up to ${ms / 1000} s for ${gool ? 'a way with two hops, which exits outside Iran' : 'HTTP/3, the fastest'}`)
+            this.progress(gool ? 'Found a way. Waiting a little longer for an exit outside Iran' : 'Found a way. Giving HTTP/3, the fastest, a few seconds')
             wait = setTimeout(() => finish(w), ms)
           },
           (e) => {
             settled++
-            if (a.method === waitingFor) waitingFor = undefined
+            wanted.delete(a.method)
             errors.push(e)
-            if (fallback && !waitingFor) return finish(fallback)
+            if (fallback && !wanted.size) return finish(fallback)
             if (settled === attempts.length && !fallback && !done) {
               done = true
               reject(new AggregateError(errors))

@@ -136,11 +136,12 @@ export function warpServerFromLink(link: string): ServerProfile {
 export function warpMethods(options: WarpOptions | undefined): WarpMethod[] {
   const method = options?.method ?? 'auto'
   const fast = WARP_METHODS.filter((m) => m.auto).map((m) => m.id)
-  return method === 'auto' ? fast : method === 'auto-foreign' ? ['gool', ...fast] : [method]
+  // One MASQUE in MASQUE at a time: two would race to make its second account.
+  return method === 'auto' ? fast : method === 'auto-foreign' ? ['gool', 'mim-h2', ...fast] : [method]
 }
 
-/** Every method "Find configs" tries at first; Gool over HTTP/3 follows once Gool's account exists. */
-export const WARP_FIND_METHODS: WarpMethod[] = ['gool', ...WARP_METHODS.filter((m) => m.auto).map((m) => m.id)]
+/** Every method "Find configs" tries at first; the HTTP/3 forms of the two-hop ones follow once their accounts exist. */
+export const WARP_FIND_METHODS: WarpMethod[] = ['gool', 'mim-h2', ...WARP_METHODS.filter((m) => m.auto).map((m) => m.id)]
 
 export function warpLabel(method: WarpMethod): string {
   return WARP_METHODS.find((m) => m.id === method)?.label ?? method
@@ -151,6 +152,9 @@ const METHOD_ARGS: Record<WarpMethod, string[]> = {
   // so it needs no direct access to the WARP API, and Cloudflare gives it a foreign exit.
   gool: ['--gool', '--h2', '-4'],
   'gool-h3': ['--gool', '--h3', '-4'],
+  // A MASQUE tunnel inside a MASQUE one. Its second account is made from inside the first.
+  'mim-h2': ['--mim', '--h2', '-4'],
+  mim: ['--mim', '--h3', '-4'],
   h3: ['--masque', '--h3', '-4'],
   h2: ['--masque', '--h2', '-4'],
   'h2-fragment': ['--masque', '--h2', '--fragment', '-4'],
@@ -163,16 +167,17 @@ const METHOD_ARGS: Record<WarpMethod, string[]> = {
  * never waits for input. `configFile` is Aether's base identity path; its WARP account
  * files are kept beside it.
  */
-export function warpArgs(method: WarpMethod, port: number, configFile: string, peer?: string, fresh = false, verifyGateway = false): string[] {
+export function warpArgs(method: WarpMethod, port: number, configFile: string, peer?: string, fresh = false, verifyGateway = false, psiphon?: PsiphonChain): string[] {
   return [
     ...METHOD_ARGS[method],
-    // A saved gateway: no scan. For Gool it is the outer (MASQUE) hop.
-    ...(peer ? ['--peer', peer] : []),
+    // A saved gateway: no scan. For the two-hop methods it is the outer hop.
+    ...(peer ? [method === 'mim' || method === 'mim-h2' ? '--mim-outer' : '--peer', peer] : []),
     // A gateway from someone else's link has to prove it really is Cloudflare's.
     ...(verifyGateway ? ['--tls-verify'] : []),
-    // Stop at the first gateway that passes real traffic: connecting fast matters more here.
+    // Stop at the first gateway that passes real traffic: connecting fast matters more here. With
+    // two hops, "verified" keeps them in separate ranges, which is what moves the exit address.
     '--scan',
-    'turbo',
+    prefersForeignExit(method) ? 'verified' : 'turbo',
     // The last working gateway is one file shared by every method; "Find configs" ignores it
     // so each method proves a gateway of its own.
     fresh ? '--no-quick-reconnect' : '--quick-reconnect',
@@ -180,16 +185,25 @@ export function warpArgs(method: WarpMethod, port: number, configFile: string, p
     `127.0.0.1:${port}`,
     '--config',
     configFile,
-    // Gool is there for its foreign exit, so it refuses an Iranian one and looks again. The
+    // Two hops are there for the foreign exit, so they refuse an Iranian one and look again. The
     // others take what they get: from Iran that is almost always an address Cloudflare
     // registers in Iran (the traffic still leaves abroad, so filtering is bypassed).
-    ...(prefersForeignExit(method) ? ['--exit-loc', '!IR'] : [])
+    ...(prefersForeignExit(method) ? ['--exit-loc', '!IR'] : []),
+    // Psiphon inside the tunnel, on a port of its own: aether -> WARP -> Psiphon -> the internet.
+    ...(psiphon ? ['--psiphon', '--psiphon-bin', psiphon.bin, '--psiphon-bind', `127.0.0.1:${psiphon.port}`, ...(psiphon.region ? ['--psiphon-region', psiphon.region] : [])] : [])
   ]
+}
+
+export interface PsiphonChain {
+  bin: string
+  port: number
+  /** The country to leave from; Psiphon picks one when missing. */
+  region?: string
 }
 
 /** Methods whose point is an exit outside Iran; Auto waits a little for them before taking another. */
 export function prefersForeignExit(method: WarpMethod): boolean {
-  return method === 'gool' || method === 'gool-h3'
+  return method === 'gool' || method === 'gool-h3' || method === 'mim' || method === 'mim-h2'
 }
 
 /** What Bridge remembers between connects, kept in WARP_STATE_FILE beside Aether's files. */
@@ -204,7 +218,8 @@ export interface WarpState {
 
 export const WARP_STATE_FILE = 'bridge-warp-state.json'
 /** After Gool misses, how long Auto connects without waiting for it (it still runs in the race). */
-export const GOOL_RETRY_MS = 6 * 60 * 60 * 1000
+export const GOOL_RETRY_MS = 30 * 60 * 1000
+const H3_RETRY_MS = 6 * 60 * 60 * 1000
 
 /**
  * Whether Auto should hold a working tunnel back to give Gool time. Not when Gool missed
@@ -216,7 +231,7 @@ export function waitForGool(state: WarpState, now = Date.now()): boolean {
 
 /** The same for HTTP/3, which is about twice as fast as HTTP/2 where UDP gets through. */
 export function waitForH3(state: WarpState, now = Date.now()): boolean {
-  return !state.h3MissedAt || now - state.h3MissedAt >= GOOL_RETRY_MS
+  return !state.h3MissedAt || now - state.h3MissedAt >= H3_RETRY_MS
 }
 
 /**
@@ -261,7 +276,7 @@ export function warpExitCountry(text: string): string | undefined {
 
 /** The Cloudflare gateway Aether connects to ("[+] using cloudflare edge 162.159.198.131:443"). */
 export function warpGateway(text: string): string | undefined {
-  return text.match(/using cloudflare edge (\S+:\d+)/)?.[1]
+  return text.match(/using cloudflare edge (\S+:\d+)/)?.[1] ?? text.match(/masque-in-masque ready: (\S+:\d+) \(outer\)/)?.[1]
 }
 
 /**
@@ -271,7 +286,7 @@ export function warpGateway(text: string): string | undefined {
  */
 export const WARP_EXIT_REFUSED = /exit location [A-Z]{2} rejected/
 /** After this many refused exits, the method gives up: its exit won't be foreign on this network. */
-export const WARP_MAX_EXIT_REFUSED = 2
+export const WARP_MAX_EXIT_REFUSED = 5
 
 /** Aether's line when the IPv6 method can't work at all on this network. */
 export const WARP_NO_IPV6 = /host has no IPv6 route/

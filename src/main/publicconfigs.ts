@@ -43,8 +43,53 @@ const where = ({ repo, branch = 'main', path }: { repo: string; branch?: string;
 
 /** Where each list can be downloaded: GitHub, then a CDN for networks where GitHub's file host is filtered. */
 export const PUBLIC_SOURCE_LISTS = SOURCES.map(where)
-/** Bridge's own daily list, already tested by the Bridge-configs repo. It still gets tested on the user's network. */
+/** Bridge's own daily lists, already tested by the Bridge-configs repo. They still get tested on the user's network. */
 export const PUBLIC_CLEAN_LIST = where({ repo: 'm4hdisa/Bridge-configs', path: 'clean.txt' })
+/** Its configs behind Cloudflare's CDN, moved onto a Cloudflare address that answers from Iran (see cloudflarecdn.ts). */
+export const PUBLIC_CLOUDFLARE_LIST = where({ repo: 'm4hdisa/Bridge-configs', path: 'cloudflare.txt' })
+
+/**
+ * More lists, only for the daily run in Bridge-configs: they are big, and Bridge itself shouldn't
+ * download them all on a user's line. Most come from patterniha/Free-Configs' sources.
+ */
+export const COLLECTOR_EXTRA_LISTS = [
+  'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt',
+  'https://raw.githubusercontent.com/itsyebekhe/PSG/main/subscriptions/xray/mix',
+  'https://raw.githubusercontent.com/Delta-Kronecker/V2ray-Config/refs/heads/main/config/all_configs.txt',
+  'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mtn/sub_1.txt',
+  'https://raw.githubusercontent.com/iampedii/whitedns-sub/refs/heads/main/base64.txt',
+  'https://raw.githubusercontent.com/iampedii/whitedns-sub/refs/heads/main/cloudflare-base64.txt',
+  'https://raw.githubusercontent.com/4n0nymou3/multi-proxy-config-fetcher/refs/heads/main/configs/proxy_configs_tested.txt',
+  'https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt',
+  'https://raw.githubusercontent.com/arshiacomplus/v2rayExtractor/refs/heads/main/mix/sub.html',
+  'https://raw.githubusercontent.com/ShadowException/VPN/refs/heads/main/configs/VPN-cat',
+  'https://raw.githubusercontent.com/zieng2/wl/main/vless_universal.txt',
+  'https://raw.githubusercontent.com/v2FreeHub/v2hub-configs/refs/heads/main/Sub-AutoUpdate',
+  'https://raw.githubusercontent.com/prominbro/sub/refs/heads/main/212.txt',
+  'https://raw.githubusercontent.com/Mahdi0024/ProxyCollector/master/sub/proxies.txt',
+  'https://raw.githubusercontent.com/luxxuria/harvester/refs/heads/main/speed_tested.txt',
+  'https://raw.githubusercontent.com/barry-far/V2ray-Config/main/All_Configs_Sub.txt',
+  'https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt',
+  'https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt',
+  'https://raw.githubusercontent.com/ripaojiedian/freenode/main/sub',
+  'https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub',
+  'https://raw.githubusercontent.com/Leon406/SubCrawler/main/sub/share/vless',
+  'https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt',
+  'https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt',
+  'https://raw.githubusercontent.com/HnCgs/HomayounConfigs/refs/heads/main/configs.txt'
+].map((url) => [url])
+
+/**
+ * What makes two configs the same server: the address and port, and behind a CDN also the Host and
+ * path, since many different servers share one Cloudflare address.
+ */
+export function publicKey(s: ServerProfile): string {
+  const t = (s.outbound as { transport?: { headers?: { Host?: string }; host?: string; path?: string; service_name?: string } }).transport
+  const x = (s.xray as XrayOutbound | undefined)?.streamSettings
+  const front = x?.wsSettings ?? x?.httpupgradeSettings ?? x?.xhttpSettings
+  const host = t?.headers?.Host ?? t?.host ?? front?.host
+  return host ? `${s.server}:${s.port}|${host}|${t?.path ?? t?.service_name ?? front?.path ?? ''}` : `${s.server}:${s.port}`
+}
 
 /** The middle value, which one odd reading can't move. */
 export function middleOf(values: number[]): number {
@@ -61,7 +106,7 @@ export function rankPublic<T extends { downMbps?: number; latency: number }>(fou
  * Downloads every list it can. A list that fails is skipped; no links at all means nothing got
  * through. `clean` is what came from Bridge's own daily list, which gets tested first.
  */
-export async function fetchPublicLinks(get: (url: string) => Promise<string>, log: (text: string) => void, sources = [PUBLIC_CLEAN_LIST, ...PUBLIC_SOURCE_LISTS]): Promise<{ links: string[]; clean: string[] }> {
+export async function fetchPublicLinks(get: (url: string) => Promise<string>, log: (text: string) => void, sources = [PUBLIC_CLEAN_LIST, PUBLIC_CLOUDFLARE_LIST, ...PUBLIC_SOURCE_LISTS]): Promise<{ links: string[]; clean: string[] }> {
   const lists = await Promise.all(
     sources.map(async (urls) => {
       for (const url of urls) {
@@ -75,7 +120,8 @@ export async function fetchPublicLinks(get: (url: string) => Promise<string>, lo
       return []
     })
   )
-  return { links: [...new Set(lists.flat())], clean: sources[0] === PUBLIC_CLEAN_LIST ? lists[0] : [] }
+  const own = sources.filter((s) => s === PUBLIC_CLEAN_LIST || s === PUBLIC_CLOUDFLARE_LIST).map((s) => lists[sources.indexOf(s)])
+  return { links: [...new Set(lists.flat())], clean: [...new Set(own.flat())] }
 }
 
 /** Addresses on the user's own machine or network, which a list has no business pointing at. */
@@ -138,14 +184,14 @@ function isStrong(s: ServerProfile): boolean {
 
 /**
  * Picks which configs to test: one for each address, none that `publicRefusal` turns down and none
- * in `skip` ("host:port", the ones already held), at random so that each try looks at different ones.
+ * in `skip` (their publicKey, the ones already held), at random so that each try looks at different ones.
  * Those in `first` take their places before the rest, but no more than half: filtering can kill a
  * list that looked fine from abroad, and the others are the way out of that.
  */
 export function choosePublicCandidates(links: string[], skip: Set<string>, max = PUBLIC_TEST_MAX, random: () => number = Math.random, first: string[] = []): ServerProfile[] {
   if (first.length) {
     const chosen = choosePublicCandidates(first, skip, Math.floor(max / 2), random)
-    const held = new Set([...skip, ...chosen.map((s) => `${s.server}:${s.port}`)])
+    const held = new Set([...skip, ...chosen.map(publicKey)])
     return [...chosen, ...choosePublicCandidates(links, held, max - chosen.length, random)]
   }
   const seen = new Set(skip)
@@ -154,7 +200,7 @@ export function choosePublicCandidates(links: string[], skip: Set<string>, max =
     if (!/^(vless|vmess|trojan|ss|hysteria2|hy2|tuic):\/\//i.test(link)) continue
     try {
       const s = parseLink(link)
-      const key = `${s.server}:${s.port}`
+      const key = publicKey(s)
       if (seen.has(key) || publicRefusal(s)) continue
       seen.add(key)
       usable.push(s)

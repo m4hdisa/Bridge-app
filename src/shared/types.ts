@@ -37,13 +37,13 @@ export interface ServerProfile {
 export type Engine = 'sing-box' | 'xray' | 'aether'
 
 /** How the free WARP server reaches Cloudflare. Which ones get through depends on the network. */
-export type WarpMethod = 'gool' | 'gool-h3' | 'h3' | 'h2' | 'h2-fragment' | 'h2-ipv6' | 'wireguard'
+export type WarpMethod = 'gool' | 'gool-h3' | 'mim-h2' | 'mim' | 'h3' | 'h2' | 'h2-fragment' | 'h2-ipv6' | 'wireguard'
 
 export interface WarpOptions {
   /**
    * The two Auto modes try the methods at the same time. "auto" keeps the fastest one that works,
-   * usually with an exit Cloudflare registers in Iran. "auto-foreign" waits for Gool, whose exit
-   * is outside Iran but which is much slower, and uses another method if Gool doesn't get through.
+   * usually with an exit Cloudflare registers in Iran. "auto-foreign" waits for a method with two
+   * hops, whose exit is outside Iran but which is slower, and uses another if none gets through.
    */
   method: WarpMethod | 'auto' | 'auto-foreign'
   /**
@@ -76,12 +76,17 @@ export interface WarpFound {
 export const WARP_METHODS: { id: WarpMethod; label: string; hint: string; auto: boolean }[] = [
   { id: 'gool', label: 'Gool (WARP in WARP)', hint: 'Exits outside Iran: a second WARP hop is opened from inside the first, so Cloudflare gives a foreign address. Much slower than the others, upload most of all.', auto: false },
   { id: 'gool-h3', label: 'Gool over HTTP/3', hint: 'Gool with a faster download than plain Gool. Needs UDP, which some networks block.', auto: false },
+  { id: 'mim-h2', label: 'MASQUE in MASQUE over HTTP/2', hint: 'Exits outside Iran another way: a second MASQUE hop inside the first, over TCP. Slower than a single tunnel.', auto: false },
+  { id: 'mim', label: 'MASQUE in MASQUE over HTTP/3', hint: 'Exits outside Iran another way: a second MASQUE hop inside the first. Needs UDP, which some networks block.', auto: false },
   { id: 'h3', label: 'MASQUE over HTTP/3', hint: 'Fastest. Needs UDP, which some networks block (often Irancell).', auto: true },
   { id: 'h2', label: 'MASQUE over HTTP/2', hint: 'Runs over TCP, for networks that block QUIC / UDP.', auto: true },
   { id: 'h2-fragment', label: 'HTTP/2 + fragment', hint: 'Splits the TLS handshake, for networks that reset it (some home internet).', auto: true },
   { id: 'h2-ipv6', label: 'HTTP/2 over IPv6', hint: "For Hamrah-e Aval (MCI), which filters Cloudflare's IPv4 addresses. Needs IPv6.", auto: true },
   { id: 'wireguard', label: 'WireGuard', hint: 'Classic WARP. Usually blocked in Iran; not tried by Auto.', auto: false }
 ]
+
+/** The countries offered for Psiphon's exit through Free WARP. Psiphon decides which it really has at any time. */
+export const PSIPHON_REGIONS = ['DE', 'NL', 'GB', 'FR', 'SE', 'FI', 'CH', 'AT', 'CA', 'US', 'JP', 'SG']
 
 /** A config in a subscription that Bridge can't use, and why. */
 export interface SkippedConfig {
@@ -185,6 +190,11 @@ export interface Settings {
   language: 'en' | 'fa'
   /** The look of the connect button on the Dashboard. */
   buttonStyle: ButtonStyle
+  /**
+   * Free WARP leaves through Psiphon, carried inside the WARP tunnel, for an exit outside Iran:
+   * '' is off, 'auto' lets Psiphon pick the country, or a country code such as 'DE'.
+   */
+  warpPsiphon: string
   /** Which defaults the saved settings have been moved to (see Store.load). */
   settingsVersion?: number
 }

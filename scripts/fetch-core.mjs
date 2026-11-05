@@ -83,8 +83,13 @@ async function fetchAether() {
   execFileSync(TAR, ['-xf', zipPath, '-C', work])
   rmSync(aetherDir, { recursive: true, force: true })
   mkdirSync(aetherDir, { recursive: true })
-  // Only the WARP engine and its licenses; the Tor / Psiphon helpers in pt\ are not used.
+  // The WARP engine, the Psiphon client it chains into for an exit outside Iran, and their
+  // licenses. The Tor helper in pt\ is not used.
   cpSync(join(work, 'aether.exe'), join(aetherDir, 'aether.exe'))
+  mkdirSync(join(aetherDir, 'pt'), { recursive: true })
+  cpSync(join(work, 'pt', 'psiphon-tunnel-core.exe'), join(aetherDir, 'pt', 'psiphon-tunnel-core.exe'))
+  cpSync(join(work, 'LICENSES', 'psiphon-tunnel-core-LICENSE.txt'), join(aetherDir, 'pt', 'psiphon-tunnel-core-LICENSE.txt'))
+  cpSync(join(work, 'LICENSES', 'psiphon-tunnel-core-THIRD-PARTY-NOTICES.txt'), join(aetherDir, 'pt', 'psiphon-tunnel-core-THIRD-PARTY-NOTICES.txt'))
   cpSync(join(work, 'LICENSES', 'aether-LICENSE.txt'), join(aetherDir, 'LICENSE'))
   cpSync(join(work, 'LICENSES', 'THIRD-PARTY-NOTICES.txt'), join(aetherDir, 'THIRD-PARTY-NOTICES.txt'))
   // AGPL-3.0: point to the exact source of this binary.
@@ -95,6 +100,8 @@ async function fetchAether() {
       `Source code: https://github.com/CluvexStudio/Aether/tree/v${AETHER_VERSION}`,
       'Project channel: https://t.me/CluvexStudio',
       'Bridge runs this aether.exe unmodified, as a separate program, for its free WARP server.',
+      'pt\\psiphon-tunnel-core.exe comes unmodified from the same Aether release: Psiphon, GPL-3.0 (see pt\\psiphon-tunnel-core-LICENSE.txt),',
+      'source code: https://github.com/Psiphon-Labs/psiphon-tunnel-core',
       ''
     ].join('\r\n')
   )
@@ -118,3 +125,4 @@ await fetchRules()
 if (!existsSync(join(coreDir, 'sing-box.exe'))) throw new Error('sing-box.exe missing after extraction')
 if (!existsSync(join(xrayDir, 'xray.exe'))) throw new Error('xray.exe missing after extraction')
 if (!existsSync(join(aetherDir, 'aether.exe'))) throw new Error('aether.exe missing after extraction')
+if (!existsSync(join(aetherDir, 'pt', 'psiphon-tunnel-core.exe'))) throw new Error('psiphon-tunnel-core.exe missing after extraction')

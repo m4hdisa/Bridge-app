@@ -5,7 +5,7 @@ import { Core } from './core'
 import { DiscordPresence, type DiscordActivity } from './discord'
 import { fetcherVia, fetchTextVia, lookupExit } from './geo'
 import { describeLink, extractLinks, parseLink } from './parser'
-import { choosePublicCandidates, fetchPublicLinks, PUBLIC_KEEP } from './publicconfigs'
+import { choosePublicCandidates, fetchPublicLinks, PUBLIC_KEEP, publicKey } from './publicconfigs'
 import { Store } from './store'
 import { fetchSubscription, SubscriptionAnswer, type SubscriptionResult } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
@@ -23,6 +23,7 @@ const core = new Core({
   singBox: join(resourcesDir, 'core', 'sing-box.exe'),
   xray: join(resourcesDir, 'xray', 'xray.exe'),
   aether: join(resourcesDir, 'aether', 'aether.exe'),
+  psiphon: join(resourcesDir, 'aether', 'pt', 'psiphon-tunnel-core.exe'),
   rulesDir: join(resourcesDir, 'rules'),
   dataDir: join(dataDir, 'core')
 })
@@ -321,7 +322,7 @@ function refreshPublicConfigs(): Promise<ImportResult> {
       const { links, clean } = await downloadPublicLinks()
       if (!links.length) throw new Error("The public lists can't be reached on this network right now")
       const old = store.state.servers.filter((s) => s.subscriptionId === id)
-      const candidates = choosePublicCandidates(links, new Set(old.map((s) => `${s.server}:${s.port}`)), undefined, undefined, clean)
+      const candidates = choosePublicCandidates(links, new Set(old.map(publicKey)), undefined, undefined, clean)
       const found = await core.findPublicConfigs([...old, ...candidates], store.state.settings.testUrl, (step, n) => setPublicStatus({ step, n }))
       if (!found.length) throw new Error('None of the public configs works on this network right now')
       const kept: ServerProfile[] = found.slice(0, PUBLIC_KEEP).map((f, i) => ({
@@ -645,8 +646,10 @@ handle('addWarpServer', async () => {
 })
 handle('findWarpConfigs', async () => {
   const found = await core.findWarpConfigs()
-  // The fastest first; those whose speed couldn't be measured go by how fast they connected.
-  found.sort((a, b) => (b.downMbps ?? 0) - (a.downMbps ?? 0) || a.readyMs - b.readyMs)
+  // Exits outside Iran first, since those open the sites that refuse Iranian users. Then the
+  // fastest; those whose speed couldn't be measured go by how fast they connected.
+  const inIran = (f: (typeof found)[number]) => (f.exit && f.exit !== 'IR' ? 0 : 1)
+  found.sort((a, b) => inIran(a) - inIran(b) || (b.downMbps ?? 0) - (a.downMbps ?? 0) || a.readyMs - b.readyMs)
   store.update((s) => {
     // Configs someone sent stay: their accounts can't be found again.
     const old = new Set(s.servers.filter((x) => isWarpConfig(x) && !x.warp?.shared).map((x) => x.id))

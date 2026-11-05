@@ -19,6 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showInDiscord: true,
   language: 'en',
   buttonStyle: 'dashboard',
+  warpPsiphon: '',
   settingsVersion: 2
 }
 
