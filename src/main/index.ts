@@ -3,15 +3,16 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Core } from './core'
 import { DiscordPresence, type DiscordActivity } from './discord'
-import { lookupExit } from './geo'
+import { fetcherVia, fetchTextVia, lookupExit } from './geo'
 import { describeLink, extractLinks, parseLink } from './parser'
+import { choosePublicCandidates, fetchPublicLinks, PUBLIC_KEEP } from './publicconfigs'
 import { Store } from './store'
-import { fetchSubscription } from './subscription'
+import { fetchSubscription, SubscriptionAnswer, type SubscriptionResult } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
 import { checkForUpdate, downloadInstaller, runInstaller } from './updater'
 import { isWarp, isWarpConfig, newWarpConfig, newWarpServer } from './warp'
 import { AUTO_SERVER, usesTun } from '../shared/types'
-import type { AppRule, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, SpeedTestStatus, UpdateStatus, WarpOptions } from '../shared/types'
+import type { AppRule, AppState, CoreStatus, Engine, ImportResult, LogLine, RunningProcess, ServerProfile, Settings, SkippedConfig, SpeedTestStatus, Subscription, UpdateStatus, WarpOptions } from '../shared/types'
 
 if (!app.requestSingleInstanceLock()) app.quit()
 
@@ -36,6 +37,7 @@ function send(channel: string, payload: unknown): void {
 
 /** Servers being pinged right now, so their latency shows a loading animation. */
 const pinging = new Set<string>()
+let publicStatus: AppState['publicStatus']
 let speedTest: SpeedTestStatus = { running: false }
 let speedAbort: AbortController | undefined
 function setSpeedTest(s: SpeedTestStatus): void {
@@ -44,7 +46,7 @@ function setSpeedTest(s: SpeedTestStatus): void {
 }
 
 function pushState(): void {
-  send('state', { ...store.state, pinging: [...pinging] })
+  send('state', { ...store.state, pinging: [...pinging], publicStatus })
   updateTray()
 }
 
@@ -119,6 +121,13 @@ async function findExit(port: number, startedAt: number): Promise<void> {
     if (!current()) return
     if (exit) {
       core.log(`VPN exit: ${exit.ip} (${exit.city ? exit.city + ', ' : ''}${exit.country})`)
+      // Cloudflare's own word on whether this tunnel is on WARP+ ("plus") or free WARP ("on").
+      if (store.state.warpPlus && store.state.servers.some((s) => s.id === core.status.serverId && isWarp(s))) {
+        void fetchTextVia(port, 'https://www.cloudflare.com/cdn-cgi/trace').then(
+          (trace) => core.log(`Free WARP: Cloudflare reports this tunnel as warp=${trace.match(/^warp=(\w+)/m)?.[1] ?? 'unknown'}`),
+          () => undefined
+        )
+      }
       return core.setExit(exit)
     }
   }
@@ -208,11 +217,31 @@ function addLinks(links: string[]): ImportResult {
   return importResult(servers.length, skipped)
 }
 
+/**
+ * Directly first. Many panels sit on Cloudflare addresses that time out on a filtered network,
+ * so if the server didn't answer, it goes through the VPN or, disconnected, a temporary WARP tunnel.
+ */
+async function fetchSubscriptionAnyRoute(url: string): Promise<SubscriptionResult> {
+  try {
+    return await fetchSubscription(url)
+  } catch (e) {
+    if (e instanceof SubscriptionAnswer) throw e
+    const port = core.vpnPort
+    if (port) {
+      core.log(`Subscription: no answer directly (${e instanceof Error ? e.message : e}), trying through the VPN`)
+      return fetchSubscription(url, fetcherVia(port))
+    }
+    if (core.status.state !== 'stopped') throw e
+    core.log(`Subscription: no answer directly (${e instanceof Error ? e.message : e}), trying through WARP`)
+    return core.withWarpProxy((warp) => fetchSubscription(url, fetcherVia(warp)))
+  }
+}
+
 async function refreshSubscription(id: string): Promise<ImportResult> {
   const sub = store.state.subscriptions.find((s) => s.id === id)
   if (!sub) throw new Error('Subscription not found')
   try {
-    const { links, usage, title, updateHours } = await fetchSubscription(sub.url)
+    const { links, usage, title, updateHours } = await fetchSubscriptionAnyRoute(sub.url)
     const old = store.state.servers.filter((x) => x.subscriptionId === id)
     const { servers, skipped } = parseLinks(links, new Map(old.map((x) => [x.link, x])))
     for (const s of servers) s.subscriptionId = id
@@ -245,9 +274,99 @@ async function refreshSubscription(id: string): Promise<ImportResult> {
 
 const DEFAULT_UPDATE_HOURS = 12
 
+// ---------- public configs ----------
+
+/** Fewer than this still answering, and it's time to look for more. */
+const PUBLIC_MIN_ALIVE = 3
+const PUBLIC_RETRY_MS = 3600_000
+const PUBLIC_REFRESH_MS = 24 * 3600_000
+let publicRun: Promise<ImportResult> | undefined
+
+function setPublicStatus(status: AppState['publicStatus']): void {
+  publicStatus = status
+  pushState()
+}
+
+async function directText(url: string): Promise<string> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(20000) })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.text()
+}
+
+/** The lists, from the network itself if it lets them through, otherwise through the VPN or a temporary WARP tunnel. */
+async function downloadPublicLinks(): Promise<{ links: string[]; clean: string[] }> {
+  const log = (text: string) => core.log(text)
+  setPublicStatus({ step: 'download' })
+  const direct = await fetchPublicLinks(directText, log)
+  if (direct.links.length) return direct
+  const port = core.vpnPort
+  if (port) return fetchPublicLinks((url) => fetchTextVia(port, url), log)
+  if (core.status.state !== 'stopped') return direct
+  core.log("Public configs: the lists can't be reached directly, trying through WARP")
+  setPublicStatus({ step: 'warp' })
+  return core.withWarpProxy((port) => fetchPublicLinks((url) => fetchTextVia(port, url), log))
+}
+
+/** Looks for public configs, starting from the ones already held. Overlapping calls share one run. */
+function refreshPublicConfigs(): Promise<ImportResult> {
+  publicRun ??= (async () => {
+    let sub = store.state.subscriptions.find((s) => s.public)
+    if (!sub) {
+      sub = { id: randomUUID(), name: 'Public configs', url: '', public: true }
+      const created = sub
+      store.update((s) => s.subscriptions.push(created))
+    }
+    const { id } = sub
+    try {
+      const { links, clean } = await downloadPublicLinks()
+      if (!links.length) throw new Error("The public lists can't be reached on this network right now")
+      const old = store.state.servers.filter((s) => s.subscriptionId === id)
+      const candidates = choosePublicCandidates(links, new Set(old.map((s) => `${s.server}:${s.port}`)), undefined, undefined, clean)
+      const found = await core.findPublicConfigs([...old, ...candidates], store.state.settings.testUrl, (step, n) => setPublicStatus({ step, n }))
+      if (!found.length) throw new Error('None of the public configs works on this network right now')
+      const kept: ServerProfile[] = found.slice(0, PUBLIC_KEEP).map((f, i) => ({
+        ...f.server,
+        // The names in the lists are mostly adverts, and nobody checks them.
+        name: `Public ${i + 1}`,
+        subscriptionId: id,
+        latency: f.latency,
+        publicConfig: { downMbps: f.downMbps, exit: f.exit }
+      }))
+      // The test can miss the config this PC is connected through; it stays until the user moves.
+      const inUse = old.find((s) => s.id === core.status.serverId && !kept.some((k) => k.id === s.id))
+      store.update((s) => {
+        s.servers = [...s.servers.filter((x) => x.subscriptionId !== id), ...kept, ...(inUse ? [inUse] : [])]
+        if (!s.servers.some((x) => x.id === s.selectedServerId)) s.selectedServerId = kept[0].id
+        Object.assign(s.subscriptions.find((x) => x.id === id)!, { updatedAt: Date.now(), lastError: undefined, total: candidates.length + old.length })
+      })
+      return importResult(kept.length, [])
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // The time is kept too, so a failure doesn't send hundreds of test connections again in ten minutes.
+      store.update((s) => Object.assign(s.subscriptions.find((x) => x.id === id) ?? {}, { updatedAt: Date.now(), lastError: msg }))
+      throw new Error(msg)
+    } finally {
+      setPublicStatus(undefined)
+    }
+  })().finally(() => (publicRun = undefined))
+  return publicRun
+}
+
+/** Testing hundreds of servers stands out on a network, so it happens only when the configs have run low, or once a day. */
+function publicRefreshDue(sub: Subscription): boolean {
+  if (!sub.updatedAt) return true
+  const age = Date.now() - sub.updatedAt
+  const alive = store.state.servers.filter((s) => s.subscriptionId === sub.id && (s.latency ?? -1) >= 0).length
+  return age >= PUBLIC_REFRESH_MS || (age >= PUBLIC_RETRY_MS && alive < PUBLIC_MIN_ALIVE)
+}
+
 /** Updates every subscription whose update interval has passed. Errors are kept on the subscription. */
 async function refreshDueSubscriptions(): Promise<void> {
   for (const sub of store.state.subscriptions) {
+    if (sub.public) {
+      if (publicRefreshDue(sub)) await refreshPublicConfigs().catch((e) => core.log(`Public configs: ${e instanceof Error ? e.message : e}`, 'warn'))
+      continue
+    }
     const hours = sub.updateHours || DEFAULT_UPDATE_HOURS
     if (sub.updatedAt && Date.now() - sub.updatedAt < hours * 3600_000) continue
     await refreshSubscription(sub.id).catch((e) => core.log(String(e instanceof Error ? e.message : e), 'warn'))
@@ -278,11 +397,21 @@ function autoPing(reason: string): void {
   if (store.state.settings.autoPing) void pingAll(reason).catch((e) => core.log(`Auto ping failed: ${e instanceof Error ? e.message : e}`, 'warn'))
 }
 
-/** The responding server with the lowest latency. */
+/** The responding server with the lowest latency, among these. */
+function lowestLatency(servers: ServerProfile[], exclude?: string): ServerProfile | undefined {
+  return servers.filter((s) => s.id !== exclude && s.latency !== undefined && s.latency >= 0).sort((a, b) => a.latency! - b.latency!)[0]
+}
+
+const ownServers = () => store.state.servers.filter((s) => !s.publicConfig)
+const publicServers = () => store.state.servers.filter((s) => s.publicConfig)
+
+/**
+ * The server Auto should use. Public configs only count for someone who has no server of their
+ * own: traffic must never move from a server they chose to one nobody knows, without them asking.
+ */
 function bestServer(exclude?: string): ServerProfile | undefined {
-  return store.state.servers
-    .filter((s) => s.id !== exclude && s.latency !== undefined && s.latency >= 0)
-    .sort((a, b) => a.latency! - b.latency!)[0]
+  const own = ownServers().filter((s) => !isWarp(s))
+  return lowestLatency(own.length ? own : publicServers(), exclude)
 }
 
 /** Auto: selects the best-ping server, pinging first unless the last results are fresh. */
@@ -312,14 +441,20 @@ function watchHealth(s: CoreStatus): void {
   if (!h || h.checkedAt === lastCheckAt) return
   lastCheckAt = h.checkedAt
   failedChecks = h.ok ? 0 : failedChecks + 1
-  if (failedChecks < 2 || failingOver || !store.state.settings.autoServer) return
+  // Public configs come and go, so someone on one moves to the next public one, even with Auto off.
+  const onPublic = !!store.state.servers.find((x) => x.id === store.state.selectedServerId)?.publicConfig
+  if (failedChecks < 2 || failingOver || !(store.state.settings.autoServer || onPublic)) return
   failingOver = true
   void (async () => {
     const current = store.state.selectedServerId
     core.log('Auto: the server stopped responding, looking for another one', 'warn')
     await pingAll('server stopped responding')
     if ((store.state.servers.find((x) => x.id === current)?.latency ?? -1) >= 0) return core.log('Auto: the server responds again, staying on it')
-    const best = bestServer(current)
+    let best = onPublic ? lowestLatency(publicServers(), current) : bestServer(current)
+    if (!best && onPublic) {
+      await refreshPublicConfigs().catch((e) => core.log(`Public configs: ${e instanceof Error ? e.message : e}`, 'warn'))
+      best = lowestLatency(publicServers(), current)
+    }
     if (!best) return core.log('Auto: no other server responds either, staying on the current one', 'warn')
     store.update((st) => (st.selectedServerId = best.id))
     pushState()
@@ -335,7 +470,8 @@ function watchHealth(s: CoreStatus): void {
 
 // When Cloudflare's WARP service is blocked, Free WARP creates its account through one of the
 // user's own servers: the one with the best ping, or else the first one.
-core.warpHelper = () => bestServer() ?? store.state.servers.find((s) => !isWarp(s))
+// A public config never gets to see the account being created.
+core.warpHelper = () => lowestLatency(ownServers()) ?? ownServers().find((s) => !isWarp(s))
 // A saved WARP config's gateway stopped answering and the scan found another: keep the new one.
 core.onWarpPeer = (id, peer, method) => {
   const server = store.state.servers.find((s) => s.id === id)
@@ -439,8 +575,30 @@ handle('getState', () => store.state)
 handle('getStatus', () => core.status)
 handle('getLogs', () => core.logs)
 
-handle('importText', (text: string) => withAutoPing(addLinks(extractLinks(text)), 'new servers'))
-handle('importClipboard', () => withAutoPing(addLinks(extractLinks(clipboard.readText())), 'new servers'))
+/** Share links are added as they are; an https:// address among them is a subscription or a panel. */
+async function importLinks(text: string): Promise<ImportResult> {
+  const links = extractLinks(text)
+  const isUrl = (l: string) => /^https?:\/\//i.test(l)
+  const result = addLinks(links.filter((l) => !isUrl(l)))
+  for (const url of links.filter(isUrl)) {
+    const known = store.state.subscriptions.find((s) => s.url === url)
+    const added = known ? await refreshSubscription(known.id) : await addSubscription('', url)
+    result.added += added.added
+    result.errors.push(...added.errors)
+  }
+  return withAutoPing(result, 'new servers')
+}
+
+async function addSubscription(name: string, url: string): Promise<ImportResult> {
+  const id = randomUUID()
+  // An empty name is filled from the panel's own title on the first update.
+  store.update((s) => s.subscriptions.push({ id, name, url }))
+  pushState()
+  return refreshSubscription(id)
+}
+
+handle('importText', (text: string) => importLinks(text))
+handle('importClipboard', () => importLinks(clipboard.readText()))
 handle('removeServer', (id: string) => {
   if (store.state.servers.find((x) => x.id === id)?.warp?.shared) core.removeSharedWarpAccount(id)
   store.update((s) => {
@@ -510,6 +668,23 @@ handle('shareWarp', async (id: string) => {
   clipboard.writeText(link)
   return link
 })
+/** A running WARP connection on the user's own account gets the new plan by connecting again. */
+async function reconnectIfOnOwnWarp(): Promise<void> {
+  const server = store.state.servers.find((s) => s.id === store.state.selectedServerId)
+  if (server && isWarp(server) && !server.warp?.shared) await reconnectIfRunning()
+}
+handle('setWarpKey', async (key: string) => {
+  const account = await core.setWarpKey(String(key).trim())
+  store.update((s) => (s.warpPlus = { accountType: account.accountType, at: Date.now() }))
+  pushState()
+  await reconnectIfOnOwnWarp()
+})
+handle('clearWarpKey', async () => {
+  await core.clearWarpKey()
+  store.update((s) => delete s.warpPlus)
+  pushState()
+  await reconnectIfOnOwnWarp()
+})
 handle('setWarpMethod', async (id: string, method: WarpOptions['method']) => {
   const server = store.state.servers.find((s) => s.id === id)
   if (!server || !isWarp(server)) throw new Error('Not the WARP server')
@@ -522,15 +697,14 @@ handle('testLatency', async (ids?: string[]) => {
   if (!ids) lastPingAt = Date.now()
 })
 
-handle('addSubscription', async (name: string, url: string) => {
-  const id = randomUUID()
-  // An empty name is filled from the panel's own title on the first update.
-  store.update((s) => s.subscriptions.push({ id, name, url }))
-  pushState()
-  return withAutoPing(await refreshSubscription(id), 'subscription added')
+handle('addSubscription', async (name: string, url: string) => withAutoPing(await addSubscription(name, url), 'subscription added'))
+handle('updateSubscription', async (id: string) => {
+  if (store.state.subscriptions.find((s) => s.id === id)?.public) return refreshPublicConfigs()
+  return withAutoPing(await refreshSubscription(id), 'subscription updated')
 })
-handle('updateSubscription', async (id: string) => withAutoPing(await refreshSubscription(id), 'subscription updated'))
+handle('addPublicConfigs', () => refreshPublicConfigs())
 handle('removeSubscription', (id: string) => {
+  if (publicRun && store.state.subscriptions.find((s) => s.id === id)?.public) throw new Error('Still looking for public configs; try again when it finishes')
   store.update((s) => {
     s.subscriptions = s.subscriptions.filter((x) => x.id !== id)
     s.servers = s.servers.filter((x) => x.subscriptionId !== id)

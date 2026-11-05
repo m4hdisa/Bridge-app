@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
-import { Check, ChevronRight, ClipboardPaste, Cloud, Copy, Ellipsis, FileText, Link2, LoaderCircle, Plus, RefreshCw, Repeat, Server as ServerIcon, Share2, Trash2, TriangleAlert, Zap } from 'lucide-react'
-import { WARP_METHODS, type ImportResult, type ServerProfile, type Subscription, type WarpOptions } from '../../../shared/types'
+import { Check, ChevronRight, ClipboardPaste, Cloud, Copy, Ellipsis, FileText, Globe, KeyRound, Link2, LoaderCircle, Plus, RefreshCw, Repeat, Server as ServerIcon, Share2, Trash2, TriangleAlert, Zap } from 'lucide-react'
+import { WARP_METHODS, type AppState, type ImportResult, type ServerProfile, type Subscription, type WarpOptions } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { ago, bytes } from '../format'
 import { cn } from '@/lib/utils'
@@ -28,6 +28,7 @@ export function Servers({ state, status, run }: PageProps) {
   const [testing, setTesting] = useState<string>()
   const [pasteOpen, setPasteOpen] = useState(false)
   const [subOpen, setSubOpen] = useState(false)
+  const [publicOpen, setPublicOpen] = useState(false)
 
   const test = async (key: string, ids?: string[]) => {
     setTesting(key)
@@ -39,6 +40,7 @@ export function Servers({ state, status, run }: PageProps) {
   const manual = state.servers.filter((s) => !s.subscriptionId && s.engine !== 'aether')
   const empty = !state.servers.length && !state.subscriptions.length
   const addWarp = () => run(() => api.addWarpServer(), () => t('Free WARP server selected'))
+  const hasPublic = state.subscriptions.some((s) => s.public)
 
   return (
     <>
@@ -75,14 +77,18 @@ export function Servers({ state, status, run }: PageProps) {
                   <FileText />
                   {t('Paste links…')}
                 </DropdownMenuItem>
+                {(!warp || !hasPublic) && <DropdownMenuSeparator />}
                 {!warp && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={addWarp}>
-                      <Cloud />
-                      {t('Free WARP server')}
-                    </DropdownMenuItem>
-                  </>
+                  <DropdownMenuItem onClick={addWarp}>
+                    <Cloud />
+                    {t('Free WARP server')}
+                  </DropdownMenuItem>
+                )}
+                {!hasPublic && (
+                  <DropdownMenuItem onClick={() => setPublicOpen(true)}>
+                    <Globe />
+                    {t('Free public configs…')}
+                  </DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -103,6 +109,10 @@ export function Servers({ state, status, run }: PageProps) {
                     <Cloud />
                     {t('Use free WARP')}
                   </Button>
+                  <Button variant="outline" onClick={() => setPublicOpen(true)}>
+                    <Globe />
+                    {t('Free public configs…')}
+                  </Button>
                   <Button variant="outline" onClick={() => run(() => api.importClipboard(), importMessage)}>
                     <ClipboardPaste />
                     {t('Import from clipboard')}
@@ -121,24 +131,39 @@ export function Servers({ state, status, run }: PageProps) {
           <WarpCard
             server={warp}
             configs={warpConfigs}
+            plus={!!state.warpPlus}
             selectedId={state.settings.autoServer ? undefined : state.selectedServerId}
             connected={status.state !== 'stopped'}
             run={run}
           />
         )}
 
-        {state.subscriptions.map((sub) => (
-          <SubscriptionCard
-            key={sub.id}
-            sub={sub}
-            servers={state.servers.filter((s) => s.subscriptionId === sub.id)}
-            selectedId={state.selectedServerId}
-            pinging={state.pinging}
-            testing={testing === sub.id}
-            onTest={(ids) => test(sub.id, ids)}
-            run={run}
-          />
-        ))}
+        {state.subscriptions.map((sub) =>
+          sub.public ? (
+            <PublicCard
+              key={sub.id}
+              sub={sub}
+              servers={state.servers.filter((s) => s.subscriptionId === sub.id)}
+              selectedId={state.selectedServerId}
+              pinging={state.pinging}
+              status={state.publicStatus}
+              testing={testing === sub.id}
+              onTest={(ids) => test(sub.id, ids)}
+              run={run}
+            />
+          ) : (
+            <SubscriptionCard
+              key={sub.id}
+              sub={sub}
+              servers={state.servers.filter((s) => s.subscriptionId === sub.id)}
+              selectedId={state.selectedServerId}
+              pinging={state.pinging}
+              testing={testing === sub.id}
+              onTest={(ids) => test(sub.id, ids)}
+              run={run}
+            />
+          )
+        )}
 
         {manual.length > 0 && (
           <Card>
@@ -163,7 +188,127 @@ export function Servers({ state, status, run }: PageProps) {
 
       <PasteDialog open={pasteOpen} onOpenChange={setPasteOpen} run={run} />
       <SubscriptionDialog open={subOpen} onOpenChange={setSubOpen} run={run} />
+      <PublicDialog open={publicOpen} onOpenChange={setPublicOpen} run={run} />
     </>
+  )
+}
+
+const PUBLIC_WARNING = 'Nobody knows who runs these servers. They can see your IP address and which sites you open, and any of them could be run by someone watching its users. Use them to get online and for ordinary browsing, not for logins, banking or anything sensitive.'
+
+function publicStep(status: NonNullable<AppState['publicStatus']>): string {
+  switch (status.step) {
+    case 'download':
+      return t('Downloading the public lists…')
+    case 'warp':
+      return t('The lists are blocked on this network. Downloading them through WARP…')
+    case 'test':
+      return t('Testing {n} configs on your network…', { n: status.n ?? 0 })
+    case 'measure':
+      return t('Trying real traffic through {n} of them…', { n: status.n ?? 0 })
+    case 'speed':
+      return t('Measuring the speed and ping of the best {n}…', { n: status.n ?? 0 })
+  }
+}
+
+function PublicCard(props: { sub: Subscription; servers: ServerProfile[]; selectedId?: string; pinging?: string[]; status: AppState['publicStatus']; testing: boolean; onTest: (ids: string[]) => void; run: PageProps['run'] }) {
+  const { sub, servers, selectedId, pinging, status, testing, onTest, run } = props
+  const responding = servers.filter((s) => s.latency !== undefined && s.latency >= 0).length
+  return (
+    <Card className={cn(sub.lastError && !status && 'border-destructive/40')}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Globe className="text-brand size-4" />
+          {t('Public configs')}
+          <Badge variant="warning">{t('Unknown servers')}</Badge>
+        </CardTitle>
+        <CardDescription>
+          {servers.length > 0 && t('{n} responding', { n: responding })}
+          {servers.length > 0 && sub.updatedAt && ' · '}
+          {sub.updatedAt && t('Updated {when}', { when: ago(sub.updatedAt) })}
+        </CardDescription>
+        <CardAction className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-sm" disabled={testing || !servers.length} aria-label={t('Test latency')} onClick={() => onTest(servers.map((s) => s.id))}>
+                <Zap className={cn(testing && 'animate-pulse text-brand')} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('Test latency')}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-sm" disabled={!!status} onClick={() => run(() => api.updateSubscription(sub.id), importMessage)}>
+                <RefreshCw className={cn(status && 'animate-spin')} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('Look for new configs')}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-sm" disabled={!!status} aria-label={t('Remove public configs')} onClick={() => run(() => api.removeSubscription(sub.id), () => t('Public configs removed'))}>
+                <Trash2 />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('Remove public configs')}</TooltipContent>
+          </Tooltip>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <Alert>
+          <TriangleAlert />
+          <AlertDescription>{t(PUBLIC_WARNING)}</AlertDescription>
+        </Alert>
+        {status && (
+          <div className="text-muted-foreground flex items-center gap-2 text-sm" role="status">
+            <LoaderCircle className="size-4 animate-spin" />
+            {publicStep(status)}
+          </div>
+        )}
+        {sub.lastError && !status && (
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertDescription>{t('Last update failed: {error}', { error: t(sub.lastError) })}</AlertDescription>
+          </Alert>
+        )}
+        {servers.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            {servers.map((s) => (
+              <ServerRow key={s.id} server={s} selected={s.id === selectedId} pinging={pinging?.includes(s.id)} run={run} />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function PublicDialog({ open, onOpenChange, run }: { open: boolean; onOpenChange: (v: boolean) => void; run: PageProps['run'] }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('Use free public configs?')}</DialogTitle>
+          <DialogDescription>{t('Bridge downloads public lists from GitHub, tests about 400 configs on your network and keeps the {n} fastest. This takes up to 3 minutes and uses up to 100 MB.', { n: 8 })}</DialogDescription>
+        </DialogHeader>
+        <Alert>
+          <TriangleAlert />
+          <AlertDescription>{t(PUBLIC_WARNING)}</AlertDescription>
+        </Alert>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            {t('Cancel')}
+          </Button>
+          <Button
+            onClick={() => {
+              onOpenChange(false)
+              void run(() => api.addPublicConfigs(), importMessage)
+            }}
+          >
+            {t('I understand, find configs')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -344,15 +489,90 @@ function useWarpShare(id: string, run: PageProps['run']) {
   return { sharing, share }
 }
 
+/** A key icon for the card's header. The box opens only when asked for: most people have no key. The key goes to Cloudflare and isn't kept, so the box is empty again afterwards. */
+function WarpPlusKey({ active, run }: { active: boolean; run: PageProps['run'] }) {
+  const [open, setOpen] = useState(false)
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const act = async (work: () => Promise<void>, done: string) => {
+    setBusy(true)
+    await run(work, () => {
+      setKey('')
+      setOpen(false)
+      return done
+    })
+    setBusy(false)
+  }
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-sm" aria-label={t('WARP+ key')} className={cn(active && 'text-brand')} onClick={() => setOpen(true)}>
+            <KeyRound />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('WARP+ key')}</TooltipContent>
+      </Tooltip>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {t('WARP+ key')}
+              {active && <Badge variant="success">{t('Active')}</Badge>}
+            </DialogTitle>
+            <DialogDescription>
+              {active
+                ? t('Free WARP is using your WARP+ key on this account. Saved configs from before need Find again only if they stop connecting. Removing the key frees its place among your five devices.')
+                : t('Have a WARP+ subscription? In the 1.1.1.1 app, open Menu, Account, Key and copy your key here. It goes only to Cloudflare and Bridge does not keep it. One key works on up to five devices, and keys from generators or referrals usually fail. WARP+ can be faster, but it does not make WARP harder to block.')}
+            </DialogDescription>
+          </DialogHeader>
+          {!active && (
+            <Input
+              dir="ltr"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label={t('WARP+ key')}
+              placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX"
+              className="font-mono text-xs"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              autoFocus
+            />
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              {t('Cancel')}
+            </Button>
+            {active ? (
+              <Button variant="outline" disabled={busy} onClick={() => act(() => api.clearWarpKey(), t('WARP+ key removed'))}>
+                {busy ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+                {t('Remove key')}
+              </Button>
+            ) : (
+              <Button disabled={busy || !key.trim()} onClick={() => act(() => api.setWarpKey(key), t('WARP+ is active'))}>
+                {busy && <LoaderCircle className="animate-spin" />}
+                {busy ? t('Activating…') : t('Activate')}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
 function WarpCard({
   server: s,
   configs,
+  plus,
   selectedId,
   connected,
   run
 }: {
   server: ServerProfile
   configs: ServerProfile[]
+  plus: boolean
   selectedId?: string
   connected: boolean
   run: PageProps['run']
@@ -381,7 +601,7 @@ function WarpCard({
         <CardTitle className="flex items-center gap-2">
           <CloudflareMark />
           {t('Free WARP')}
-          <Badge variant="success">{t('Free')}</Badge>
+          <Badge variant="success">{plus ? 'WARP+' : t('Free')}</Badge>
         </CardTitle>
         <CardDescription>
           {t('Cloudflare WARP, no config or subscription needed. Bridge finds a way through your network each time you connect, which can take up to a minute; a saved config below connects in seconds. Sites see a Cloudflare address, and some of them ask for a captcha.')}
@@ -397,6 +617,7 @@ function WarpCard({
               {t('Use')}
             </Button>
           )}
+          <WarpPlusKey active={plus} run={run} />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm">
@@ -570,6 +791,27 @@ function ServerRow({ server: s, selected, pinging, run }: { server: ServerProfil
           {s.server}:{s.port}
         </div>
       </div>
+      {s.publicConfig && (
+        <>
+          {s.publicConfig.downMbps !== undefined && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span dir="ltr" className="text-muted-foreground tabular text-xs whitespace-nowrap">
+                  ↓ {s.publicConfig.downMbps}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{t('Speed in Mbps when this config was found')}</TooltipContent>
+            </Tooltip>
+          )}
+          {s.publicConfig.exit && (
+            <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+              <Flag code={s.publicConfig.exit} className="h-3 w-4" />
+              {s.publicConfig.exit}
+            </span>
+          )}
+          <Badge variant="warning">{t('Public')}</Badge>
+        </>
+      )}
       <Badge variant="outline" className="uppercase">
         {s.protocol}
       </Badge>

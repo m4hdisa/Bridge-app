@@ -133,6 +133,18 @@ function urlParts(link: string) {
 
 function streamFromParams(params: URLSearchParams, defaults: Partial<StreamParams> = {}): Record<string, any> {
   const g = (k: string) => params.get(k)
+  const stream = baseStream(g, defaults)
+  try {
+    // Xray's own share links carry finalmask (fragmenting, for example) as JSON in "fm".
+    const mask = JSON.parse(g('fm') || 'null')
+    if (mask && typeof mask === 'object') stream.finalmask = mask
+  } catch {
+    // Ignore a malformed "fm"; the basic settings still work.
+  }
+  return stream
+}
+
+function baseStream(g: (k: string) => string | null, defaults: Partial<StreamParams>): Record<string, any> {
   return buildStream({
     type: g('type'),
     security: g('security') ?? defaults.security,

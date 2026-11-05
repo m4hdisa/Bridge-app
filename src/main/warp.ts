@@ -198,6 +198,8 @@ export interface WarpState {
   goolMissedAt?: number
   /** When Auto last waited for HTTP/3 and it didn't get through. */
   h3MissedAt?: number
+  /** The WARP account's own free key, from before a WARP+ key replaced it. */
+  plusOriginalLicense?: string
 }
 
 export const WARP_STATE_FILE = 'bridge-warp-state.json'

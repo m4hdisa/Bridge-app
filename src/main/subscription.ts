@@ -1,4 +1,5 @@
 // Downloads and parses subscription URLs.
+import { noLinksReason } from './configfile'
 import { decodeBase64, extractLinks } from './parser'
 import type { Subscription } from '../shared/types'
 
@@ -79,26 +80,55 @@ function parseTitle(header: string | null): string | undefined {
   }
 }
 
-function download(url: string): Promise<Response> {
-  return fetch(url, {
+/** How a subscription gets downloaded. The default is directly, over the normal network. */
+export type Fetcher = (url: string, init: RequestInit) => Promise<Response>
+
+/** The server answered and there are no configs in the answer. Another route to it wouldn't change that. */
+export class SubscriptionAnswer extends Error {}
+
+function download(url: string, get: Fetcher): Promise<Response> {
+  return get(url, {
     // Panels (Marzban, 3x-ui, Hiddify...) pick the output format from the User-Agent;
     // this one gets plain base64 share links.
     headers: { 'User-Agent': 'v2rayN/7.0 Bridge/0.1' },
-    signal: AbortSignal.timeout(20000)
+    signal: AbortSignal.timeout(15000)
   })
 }
 
-export async function fetchSubscription(url: string): Promise<SubscriptionResult> {
-  let res = await download(url)
+/**
+ * BPB Panel: the subscriptions to try when someone gives the panel's own address, or a
+ * subscription link that lost its "?app=" (without it the panel answers with its settings).
+ */
+export function panelSubscriptions(url: string): string[] {
+  const u = new URL(url)
+  const m = u.pathname.match(/^(\/[^/]+)\/(?:panel|login|sub(?:\/(normal|raw|fragment))?)\/?$/)
+  if (!m || (m[2] && u.searchParams.get('app'))) return []
+  const of = (type: string) => `${u.origin}${m[1]}/sub/${type}?app=xray`
+  return m[2] ? [of(m[2])] : [of('raw'), of('fragment')]
+}
+
+async function downloadChecked(url: string, get: Fetcher): Promise<Response> {
+  let res = await download(url, get)
   // Some panels answer 5xx now and then (rate limits); one retry usually gets through.
   if (res.status >= 500) {
     await new Promise((r) => setTimeout(r, 2000))
-    res = await download(url)
+    res = await download(url, get)
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) throw new SubscriptionAnswer(`HTTP ${res.status}`)
+  return res
+}
+
+export async function fetchSubscription(url: string, get: Fetcher = fetch): Promise<SubscriptionResult> {
+  let res = await downloadChecked(url, get)
   const body = await res.text()
-  const links = extractLinks(body)
-  if (!links.length) throw new Error('The subscription returned no share links')
+  let links = extractLinks(body)
+  if (!links.length) {
+    const others = panelSubscriptions(url)
+    const found = await Promise.all(others.map((u) => downloadChecked(u, get).then(async (r) => ({ r, links: extractLinks(await r.text()) })).catch(() => undefined)))
+    links = [...new Set(found.flatMap((f) => f?.links ?? []))]
+    if (!links.length) throw new SubscriptionAnswer(noLinksReason(body))
+    res = found.find((f) => f?.links.length)!.r
+  }
   const interval = Number(res.headers.get('profile-update-interval'))
   return {
     links,

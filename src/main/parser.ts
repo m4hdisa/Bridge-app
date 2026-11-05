@@ -1,6 +1,7 @@
 // Converts share links (vless://, vmess://, trojan://, ss://, hysteria2://, tuic://)
 // into sing-box outbound objects.
 import { randomUUID } from 'node:crypto'
+import { linksFromConfigFile } from './configfile'
 import { WARP_SHARE_SCHEME, warpServerFromLink } from './warp'
 import { linkToXray, xrayServer, type XrayOutbound } from './xray'
 import type { Outbound, Protocol, ServerProfile } from '../shared/types'
@@ -34,12 +35,13 @@ function looksLikeBase64(s: string): boolean {
 }
 
 /**
- * Pulls share links out of arbitrary text: one link per line, or a whole
- * base64-encoded subscription body.
+ * Pulls share links out of arbitrary text: one link per line, a whole base64-encoded
+ * subscription body, or a client's JSON config file.
  */
 export function extractLinks(text: string): string[] {
   const trimmed = text.trim()
   if (!trimmed) return []
+  if (/^[[{]/.test(trimmed)) return linksFromConfigFile(trimmed)
   let body = trimmed
   if (!trimmed.includes('://') && looksLikeBase64(trimmed)) {
     try {
@@ -47,6 +49,7 @@ export function extractLinks(text: string): string[] {
     } catch {
       // not base64 after all
     }
+    if (/^\s*[[{]/.test(body)) return linksFromConfigFile(body)
   }
   return body
     .split(/\r?\n/)
@@ -88,7 +91,8 @@ export function parseLink(link: string): ServerProfile {
     xrayError = e
   }
   try {
-    return { ...parseSingBoxLink(link), engine: 'sing-box', xray }
+    // Only Xray can fragment or mask the connection the way such a link asks.
+    return { ...parseSingBoxLink(link), engine: xray?.streamSettings?.finalmask ? 'xray' : 'sing-box', xray }
   } catch (e) {
     if (!(e instanceof UnsupportedLinkError) || !xray) {
       // Neither core can use it; explain with the more useful error.

@@ -289,7 +289,7 @@ function quickSocket(port: number, host: string, start: (s: TLSSocket) => void, 
 }
 
 /** Download speed from one source: the bytes after a short warm-up. Undefined if it refuses or sends nothing. */
-async function quickGet(port: number, host: string, path: string): Promise<number | undefined> {
+async function quickGet(port: number, host: string, path: string, deadlineMs = QUICK_DOWN_MS): Promise<number | undefined> {
   let head: Buffer | undefined = Buffer.alloc(0)
   let refused = false
   let bytes = 0
@@ -317,7 +317,7 @@ async function quickGet(port: number, host: string, path: string): Promise<numbe
       bytes += body
       if (!mark && lastAt - firstAt >= QUICK_WARMUP_MS) mark = { at: lastAt, bytes }
     },
-    QUICK_DOWN_MS
+    deadlineMs
   )
   if (refused || !bytes || lastAt <= firstAt) return undefined
   // A transfer over before the warm-up ended leaves only the whole of it to go on.
@@ -365,6 +365,37 @@ export async function quickSpeed(port: number): Promise<{ downMbps?: number; upM
   }
   const up = await quickPost(port).catch(() => undefined)
   return { downMbps: down && Math.round(down), upMbps: up && Math.round(up) }
+}
+
+/** Download only, for trying many servers, in Mbps. A server that goes quiet just gives no reading. */
+export async function quickDown(port: number, bytes: number, deadlineMs: number): Promise<number | undefined> {
+  const from = (host: string, path: string, ms: number) => withDeadline(quickGet(port, host, path, ms), ms + 5000).catch(() => undefined)
+  const down = (await from(HOST, `/__down?bytes=${bytes}`, deadlineMs)) ?? (await from(QUICK_SOURCES[1].host, QUICK_SOURCES[1].path, Math.min(deadlineMs, 1500)))
+  return down && Math.round(down * 10) / 10
+}
+
+/**
+ * The country traffic leaves from, asked over HTTPS with the certificate checked. Undefined when
+ * neither source answers, so also when the server tampers with HTTPS or doesn't really carry traffic.
+ */
+export async function quickExit(port: number): Promise<string | undefined> {
+  const ask = async (host: string, path: string, read: (body: string) => string | undefined) => {
+    let text = ''
+    await quickSocket(port, host, (s) => s.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: Bridge\r\nAccept: */*\r\nConnection: close\r\n\r\n`), (d) => (text += d.toString('latin1')), 6000)
+    const code = read(text)
+    return code && /^[A-Za-z]{2}$/.test(code) && code.toUpperCase() !== 'XX' ? code.toUpperCase() : undefined
+  }
+  const trace = () => ask('www.cloudflare.com', '/cdn-cgi/trace', (b) => b.match(/^loc=(\w+)/m)?.[1])
+  const country = () => ask('api.country.is', '/', (b) => b.match(/"country"\s*:\s*"(\w+)"/)?.[1])
+  return (await withDeadline(trace()).catch(() => undefined)) ?? (await withDeadline(country()).catch(() => undefined))
+}
+
+/** A server that accepts the local connection and then says nothing must not hold up the test. */
+function withDeadline<T>(p: Promise<T>, ms = 8000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms)
+    p.then(resolve, reject).finally(() => clearTimeout(timer))
+  })
 }
 
 export type PathProgress = (phase: 'download' | 'upload', mbps: number) => void

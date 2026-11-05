@@ -14,7 +14,9 @@ import { GOOL_RETRY_MS, isWarp, parseWarpLine, parseWarpShareLink, prefersForeig
 import { clearSystemProxy, flushDns, freePort, hasInternetIpv6, networkInfo, setHostRoutes, setSystemProxy } from './system'
 import { handoffCandidates } from './handoff'
 import { findPathMtu, MTU_TARGETS } from './mtu'
-import { adapterDialer, quickSpeed, runPath, socksDialer } from './speedtest'
+import { adapterDialer, quickDown, quickExit, quickSpeed, runPath, socksDialer } from './speedtest'
+import { isPrivateAddress, middleOf, PUBLIC_KEEP, PUBLIC_MEASURE_BYTES, PUBLIC_MEASURE_MAX, PUBLIC_MEASURE_MS, PUBLIC_SAMPLE_BYTES, PUBLIC_SAMPLE_MAX, PUBLIC_SAMPLE_MS, PUBLIC_SAMPLE_WORKERS, rankPublic, spreadOut } from './publicconfigs'
+import { getWarpAccount, isWarpKey, putWarpLicense, WarpApiError, warpCredentials, type WarpAccountInfo, type WarpCredentials } from './warpplus'
 import { HEALTH_INTERVAL_MS, usesTun } from '../shared/types'
 import type { AppRoute, AppRule, AppTraffic, CoreStatus, HealthCheck, LogLine, MtuResult, ServerProfile, Settings, SpeedPath, SpeedResult, SpeedTestResult, TrafficStats, WarpFound, WarpMethod } from '../shared/types'
 
@@ -93,6 +95,21 @@ interface ClashConnection {
 
 const mbpsText = (v?: number) => (v === undefined ? '-' : v.toFixed(1))
 const speedLine = (r: SpeedResult) => `down ${mbpsText(r.downMbps)} Mbps, up ${mbpsText(r.upMbps)} Mbps, ${Math.round(r.usedBytes / 1e6)} MB used${r.error ? ` (${r.error})` : ''}`
+
+/** A config from a public list after its quick try. */
+export interface PublicSample {
+  server: ServerProfile
+  exit: string
+  rough?: number
+}
+
+/** A config from a public list that proved itself on this network. */
+export interface PublicFound {
+  server: ServerProfile
+  latency: number
+  exit: string
+  downMbps?: number
+}
 
 /** Thrown when the user disconnects while Bridge is still connecting. */
 class Cancelled extends Error {
@@ -452,20 +469,35 @@ export class Core extends EventEmitter {
    * Starts a plain local SOCKS proxy into one of the user's own servers (see warpHelper) and
    * returns its port and process, or undefined when there is no server to use or it doesn't start.
    */
+  /** Starts a separate core that offers just this server on a local SOCKS port. */
+  private async launchLocalProxy(server: ServerProfile, name: string): Promise<{ port: number; child: ChildProcess }> {
+    const port = await freePort()
+    if (server.engine === 'xray' && server.xray) {
+      return { port, child: await this.launchXray([{ port, outbound: await this.pinXray(server.xray as XrayOutbound, true) }], name, this.realAdapter) }
+    }
+    const api: ClashApi = { port: await freePort(), secret: randomUUID() }
+    const file = join(this.paths.dataDir, `${name}.json`)
+    writeFileSync(file, JSON.stringify(buildHelperConfig(await this.pinAddress(server, true), port, api), null, 2))
+    return { port, child: await launch(this.paths.singBox, file, this.paths.dataDir, api, (line, isErr) => isErr && /FATAL/.test(line) && this.coreLine(line, true)) }
+  }
+
+  /** Runs `use` with this server on a local SOCKS port, and stops the core afterwards. */
+  private async withLocalProxy<T>(server: ServerProfile, name: string, use: (port: number) => Promise<T>): Promise<T> {
+    let child: ChildProcess | undefined
+    try {
+      const proxy = await this.launchLocalProxy(server, name)
+      child = proxy.child
+      return await use(proxy.port)
+    } finally {
+      await killProcess(child)
+    }
+  }
+
   private async startWarpHelper(): Promise<{ port: number; child: ChildProcess } | undefined> {
     const server = this.warpHelper?.()
     if (!server) return undefined
     try {
-      const port = await freePort()
-      let child: ChildProcess
-      if (server.engine === 'xray' && server.xray) {
-        child = await this.launchXray([{ port, outbound: await this.pinXray(server.xray as XrayOutbound, true) }], 'warp-helper')
-      } else {
-        const api: ClashApi = { port: await freePort(), secret: randomUUID() }
-        const file = join(this.paths.dataDir, 'warp-helper.json')
-        writeFileSync(file, JSON.stringify(buildHelperConfig(await this.pinAddress(server, true), port, api), null, 2))
-        child = await launch(this.paths.singBox, file, this.paths.dataDir, api, (line, isErr) => isErr && /ERROR|FATAL/.test(line) && this.coreLine(line, true))
-      }
+      const { port, child } = await this.launchLocalProxy(server, 'warp-helper')
       // Tracked with the aether processes, so a cancelled connect stops it too.
       this.warpChildren.add(child)
       child.once('exit', () => this.warpChildren.delete(child))
@@ -484,7 +516,7 @@ export class Core extends EventEmitter {
   private async registerWarp(checkCancelled: () => void, dir = this.warpDir): Promise<void> {
     const config = join(dir, 'aether.toml')
     const done = () => existsSync(join(dir, WARP_IDENTITY_FILE))
-    this.log(dir === this.warpDir ? 'Free WARP: creating a WARP account (first use only, can take a few minutes)' : 'Free WARP: creating a WARP account for a share link')
+    this.log(dir === this.warpDir ? 'Free WARP: creating a WARP account (first use only, can take a few minutes)' : 'Free WARP: creating a separate WARP account')
     this.progress('Creating a free WARP account (first time only)')
     if (this.status.state === 'running' && this.probePort) {
       this.log('Free WARP: creating the account through the VPN')
@@ -646,6 +678,196 @@ export class Core extends EventEmitter {
     } finally {
       this.scanningWarp = false
     }
+  }
+
+  /** A local SOCKS port whose traffic always goes through the VPN, while connected. */
+  get vpnPort(): number | undefined {
+    return this.status.state === 'running' ? this.probePort || undefined : undefined
+  }
+
+  /** Calls Cloudflare's account API: through the VPN if connected, otherwise directly, then through a temporary WARP tunnel. */
+  private async overWarpApi<T>(use: (port?: number) => Promise<T>): Promise<T> {
+    if (this.status.state === 'running' && this.probePort) return use(this.probePort)
+    try {
+      return await use()
+    } catch (e) {
+      if (e instanceof WarpApiError || this.status.state !== 'stopped') throw e
+      this.log(`Free WARP: Cloudflare's account service can't be reached directly (${e instanceof Error ? e.message : e}), trying through WARP`)
+      return this.withWarpProxy((port) => use(port))
+    }
+  }
+
+  /**
+   * Binds the user's own WARP+ key to the account Free WARP uses. Cloudflare has a known bug where
+   * an account that has already connected doesn't become WARP+, so if that happens the key goes on
+   * a new account, which then replaces the old one. Throws if the account doesn't end up WARP+.
+   */
+  async setWarpKey(key: string): Promise<WarpAccountInfo> {
+    if (!isWarpKey(key)) throw new Error("That doesn't look like a WARP+ key. It has three groups of eight letters and digits, like AAAAAAAA-BBBBBBBB-CCCCCCCC")
+    const exe = this.paths.aether
+    if (!exe || !existsSync(exe)) throw new Error('WARP core (aether.exe) not found; reinstall Bridge')
+    mkdirSync(this.warpDir, { recursive: true })
+    const identity = join(this.warpDir, WARP_IDENTITY_FILE)
+    if (!existsSync(identity)) await this.registerWarp(() => undefined)
+    const cred = warpCredentials(readFileSync(identity, 'utf8'))
+    const refused = (e: unknown) => (e instanceof WarpApiError ? new Error(`Cloudflare refused this key: ${e.message.split(key).join('(key)')}`) : e)
+    return this.overWarpApi(async (port) => {
+      const before = await getWarpAccount(cred, port)
+      await putWarpLicense(cred, key, port).catch((e) => {
+        throw refused(e)
+      })
+      const after = await getWarpAccount(cred, port)
+      if (after.plus) {
+        // The account's own free key is what removing WARP+ goes back to.
+        const state = this.readWarpState()
+        this.writeWarpState({ ...state, plusOriginalLicense: state.plusOriginalLicense ?? before.license })
+        this.log('Free WARP: WARP+ key added to the account')
+        return after
+      }
+      // What Cloudflare says about the key's account. Never the key itself.
+      this.log(`Free WARP: after adding the key, Cloudflare reports account type "${after.accountType}" with ${Math.round(after.premiumData / 1e9)} GB of WARP+ data`)
+      // Each account left on the key would take one of its five places.
+      const putBack = async (c: WarpCredentials, license?: string) => {
+        if (license) await putWarpLicense(c, license, port).catch((e) => this.log(`Free WARP: could not take the key off the account again (${e instanceof Error ? e.message : e})`, 'warn'))
+      }
+      await putBack(cred, before.license)
+      this.log('Free WARP: the account did not become WARP+, trying the key on a new account')
+      const dir = join(this.warpDir, `plus-${randomUUID()}`)
+      mkdirSync(dir, { recursive: true })
+      try {
+        await this.registerWarp(() => undefined, dir)
+        const fresh = readFileSync(join(dir, WARP_IDENTITY_FILE), 'utf8')
+        const freshCred = warpCredentials(fresh)
+        const freshBefore = await getWarpAccount(freshCred, port)
+        await putWarpLicense(freshCred, key, port).catch((e) => {
+          throw refused(e)
+        })
+        const freshAfter = await getWarpAccount(freshCred, port)
+        if (!freshAfter.plus) {
+          await putBack(freshCred, freshBefore.license)
+          throw new Error("This key has no WARP+ on it: Cloudflare accepted it, but its account has no WARP+ data. Every 1.1.1.1 account has a key, even a free one. Your Free WARP account hasn't changed")
+        }
+        writeFileSync(identity, fresh)
+        this.writeWarpState({ ...this.readWarpState(), plusOriginalLicense: freshBefore.license })
+        this.log('Free WARP: WARP+ key added on a new account')
+        return freshAfter
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  }
+
+  /** Takes the WARP+ key off the account, which frees its place among the key's five devices. */
+  async clearWarpKey(): Promise<void> {
+    const identity = join(this.warpDir, WARP_IDENTITY_FILE)
+    const state = this.readWarpState()
+    if (!existsSync(identity) || !state.plusOriginalLicense) return
+    const cred = warpCredentials(readFileSync(identity, 'utf8'))
+    await this.overWarpApi((port) => putWarpLicense(cred, state.plusOriginalLicense!, port))
+    this.writeWarpState({ ...state, plusOriginalLicense: undefined })
+    this.log('Free WARP: WARP+ key removed from the account')
+  }
+
+  /** Runs `use` with the local port of a temporary WARP tunnel, to reach what the network blocks. Only while disconnected. */
+  async withWarpProxy<T>(use: (port: number) => Promise<T>): Promise<T> {
+    if (this.status.state !== 'stopped') throw new Error('Bridge is connected')
+    if (this.scanningWarp) throw new Error('Already finding WARP configs')
+    const exe = this.paths.aether
+    if (!exe || !existsSync(exe)) throw new Error('WARP core (aether.exe) not found; reinstall Bridge')
+    mkdirSync(this.warpDir, { recursive: true })
+    const gen = this.startGen
+    if (!existsSync(join(this.warpDir, WARP_IDENTITY_FILE))) await this.registerWarp(() => this.checkCancelled(gen))
+    const won = await this.raceWarpMethods(warpMethods({ method: 'auto' }), gen)
+    const losers = [...this.warpChildren].filter((c) => c !== won.child)
+    for (const c of losers) this.warpChildren.delete(c)
+    await Promise.all(losers.map((c) => killProcess(c)))
+    try {
+      return await use(won.port)
+    } finally {
+      this.warpChildren.delete(won.child)
+      await killProcess(won.child)
+    }
+  }
+
+  /** Drops configs whose name doesn't resolve, or leads to the user's own network as an address could. */
+  private async publicOutsideOwnNetwork(candidates: ServerProfile[]): Promise<ServerProfile[]> {
+    const queue = [...candidates]
+    const usable: ServerProfile[] = []
+    const check = async () => {
+      for (let s = queue.shift(); s; s = queue.shift()) {
+        const host = s.engine === 'xray' && s.xray ? xrayServer(s.xray as XrayOutbound).host : String(s.outbound.server)
+        const r = host ? await this.resolver.resolve(host).catch(() => undefined) : undefined
+        if (r && !isPrivateAddress(r.ip)) usable.push(s)
+      }
+    }
+    await Promise.all(Array.from({ length: 16 }, check))
+    return usable
+  }
+
+  /** A quick try of real traffic through each, a few at a time. The speeds are only rough, because they share the line. */
+  private async samplePublic(servers: ServerProfile[], workers: number): Promise<PublicSample[]> {
+    const sampled: PublicSample[] = []
+    const queue = [...servers]
+    const sample = async (slot: number) => {
+      for (let server = queue.shift(); server; server = queue.shift()) {
+        const current = server
+        await this.withLocalProxy(current, `public-test-proxy-${slot}`, async (port) => {
+          const exit = await quickExit(port)
+          // No answer: it doesn't really carry traffic, or it tampers with HTTPS. In Iran: filtered there too.
+          if (exit && exit !== 'IR') sampled.push({ server: current, exit, rough: await quickDown(port, PUBLIC_SAMPLE_BYTES, PUBLIC_SAMPLE_MS) })
+        }).catch((e) => this.log(`Public configs: one couldn't be started (${e instanceof Error ? e.message : e})`))
+      }
+    }
+    await Promise.all(Array.from({ length: workers }, (_, slot) => sample(slot)))
+    return sampled
+  }
+
+  /** The daily list: every config that answers and carries real HTTPS, up to `max`, fastest first. */
+  async checkPublicConfigs(candidates: ServerProfile[], testUrl: string, max: number): Promise<PublicSample[]> {
+    const usable = await this.publicOutsideOwnNetwork(candidates)
+    const latency = await this.testLatency(usable, testUrl, { workers: 64, timeoutMs: 5000, name: 'public-test', quiet: true })
+    const answering = usable.filter((s) => (latency.get(s.id) ?? -1) >= 0).sort((a, b) => latency.get(a.id)! - latency.get(b.id)!)
+    this.log(`Public configs: ${answering.length} of ${usable.length} answer`)
+    const sampled = await this.samplePublic(spreadOut(answering, max), 8)
+    this.log(`Public configs: ${sampled.length} carry real HTTPS outside Iran`)
+    return sampled.sort((a, b) => (b.rough ?? 0) - (a.rough ?? 0))
+  }
+
+  /**
+   * Tests configs from public lists on the real network: which answer at all, then which of those
+   * really carry HTTPS with valid certificates, leave outside Iran and move data quickly, and
+   * finally the speed and steadiness of the best. Returns those it would keep, best first.
+   */
+  async findPublicConfigs(candidates: ServerProfile[], testUrl: string, progress: (step: 'test' | 'measure' | 'speed', n: number) => void): Promise<PublicFound[]> {
+    const usable = await this.publicOutsideOwnNetwork(candidates)
+    progress('test', usable.length)
+    const latency = await this.testLatency(usable, testUrl, { workers: 40, timeoutMs: 5000, name: 'public-test', quiet: true })
+    const answering = usable.filter((s) => (latency.get(s.id) ?? -1) >= 0).sort((a, b) => latency.get(a.id)! - latency.get(b.id)!)
+    this.log(`Public configs: ${answering.length} of ${usable.length} answer on this network`)
+
+    const shortlist = spreadOut(answering, PUBLIC_SAMPLE_MAX)
+    progress('measure', shortlist.length)
+    const sampled = await this.samplePublic(shortlist, PUBLIC_SAMPLE_WORKERS)
+    sampled.sort((a, b) => (b.rough ?? 0) - (a.rough ?? 0) || latency.get(a.server.id)! - latency.get(b.server.id)!)
+    const finalists = sampled.slice(0, PUBLIC_MEASURE_MAX)
+
+    // The best ones get two more pings, so one lucky answer doesn't count for much, and then the
+    // line to themselves for a proper reading.
+    progress('speed', finalists.length)
+    const servers = finalists.map((f) => f.server)
+    const rounds = [latency]
+    for (let round = 0; round < 2 && servers.length; round++) rounds.push(await this.testLatency(servers, testUrl, { workers: 12, timeoutMs: 5000, name: 'public-test', quiet: true }))
+    const found: PublicFound[] = []
+    for (const { server, exit, rough } of finalists) {
+      const pings = rounds.map((r) => r.get(server.id) ?? -1).filter((ms) => ms >= 0)
+      // Answered only once out of three: too unsteady to hand to anyone.
+      if (pings.length < 2) continue
+      const measured = await this.withLocalProxy(server, 'public-test-proxy-0', (port) => quickDown(port, PUBLIC_MEASURE_BYTES, PUBLIC_MEASURE_MS)).catch(() => undefined)
+      found.push({ server, exit, latency: middleOf(pings), downMbps: measured ?? rough })
+    }
+    const kept = rankPublic(found).slice(0, PUBLIC_KEEP)
+    this.log(`Public configs: ${kept.length} kept, ${kept.map((f) => `${f.downMbps ?? '?'} Mbps / ${f.latency} ms`).join(', ')}`)
+    return kept
   }
 
   private readWarpState(): WarpState {
@@ -1157,13 +1379,14 @@ export class Core extends EventEmitter {
    * Real latency test: starts a separate sing-box with every server as an outbound
    * and asks each one to fetch the test URL. Returns ms per server id, -1 on failure.
    */
-  async testLatency(servers: ServerProfile[], testUrl: string): Promise<Map<string, number>> {
+  async testLatency(servers: ServerProfile[], testUrl: string, opts: { workers?: number; timeoutMs?: number; name?: string; quiet?: boolean } = {}): Promise<Map<string, number>> {
+    const { workers = 8, timeoutMs = 6000, name = 'latency-test', quiet = false } = opts
     const results = new Map<string, number>()
     // The free WARP server has no fixed address to ping; finding one is part of connecting.
     servers = servers.filter((s) => !isWarp(s))
     if (!servers.length) return results
-    const configFile = join(this.paths.dataDir, 'latency-test.json')
-    const workDir = join(this.paths.dataDir, 'latency-test')
+    const configFile = join(this.paths.dataDir, `${name}.json`)
+    const workDir = join(this.paths.dataDir, name)
     mkdirSync(workDir, { recursive: true })
 
     // If sing-box refuses one server ("initialize outbound[N]: ..."), mark it failed and retry without it.
@@ -1189,7 +1412,7 @@ export class Core extends EventEmitter {
     if (xrayEntries.length) {
       try {
         // Bound to the real adapter while connected, or every test connection goes through TUN too.
-        xrayTest = await this.launchXray(xrayEntries, 'xray-latency-test', this.realAdapter)
+        xrayTest = await this.launchXray(xrayEntries, `xray-${name}`, this.realAdapter)
         const ports = new Map(xrayEntries.map((e) => [e.id, e.port]))
         testable = testable.map((s) => (ports.has(s.id) ? { ...s, outbound: socksOutbound(ports.get(s.id)!) } : s))
       } catch (e) {
@@ -1208,14 +1431,14 @@ export class Core extends EventEmitter {
       try {
         child = await launch(this.paths.singBox, configFile, workDir, api, (line, isErr) => {
           if (/FATAL/.test(line)) fatal = line
-          if (isErr && /ERROR|FATAL/.test(line)) this.coreLine(line, true)
+          if (!quiet && isErr && /ERROR|FATAL/.test(line)) this.coreLine(line, true)
         })
       } catch (e) {
         // outbound[0] is "direct", so server i is outbound[i + 1].
         const index = Number(fatal.match(/outbound\[(\d+)\]/)?.[1]) - 1
         const bad = testable[index]
         if (!bad) throw e
-        this.log(`Latency test: skipping "${bad.name}" (${fatal.replace(/^.*?outbound\[\d+\]:\s*/, '')})`, 'warn')
+        if (!quiet) this.log(`Latency test: skipping "${bad.name}" (${fatal.replace(/^.*?outbound\[\d+\]:\s*/, '')})`, 'warn')
         results.set(bad.id, -1)
         testable = testable.filter((s) => s !== bad)
       }
@@ -1232,8 +1455,8 @@ export class Core extends EventEmitter {
           try {
             const r = await clashGet<{ delay: number }>(
               api,
-              `/proxies/${encodeURIComponent(s.id)}/delay?timeout=6000&url=${encodeURIComponent(testUrl)}`,
-              8000
+              `/proxies/${encodeURIComponent(s.id)}/delay?timeout=${timeoutMs}&url=${encodeURIComponent(testUrl)}`,
+              timeoutMs + 2000
             )
             results.set(s.id, r.delay)
           } catch {
@@ -1241,7 +1464,7 @@ export class Core extends EventEmitter {
           }
         }
       }
-      await Promise.all(Array.from({ length: Math.min(8, testable.length) }, worker))
+      await Promise.all(Array.from({ length: Math.min(workers, testable.length) }, worker))
     } finally {
       await killProcess(child)
       await killProcess(xrayTest)

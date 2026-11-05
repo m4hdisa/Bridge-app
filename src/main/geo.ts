@@ -36,6 +36,20 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))])
 }
 
+/** A fetch through a local SOCKS port, for what the network blocks. */
+export function fetcherVia(port: number): (url: string, init?: RequestInit) => Promise<Response> {
+  const ses = session.fromPartition(`bridge-lists-${port}`, { cache: false })
+  const ready = ses.setProxy({ proxyRules: `socks5://127.0.0.1:${port}` })
+  return (url, init) => ready.then(() => withTimeout(ses.fetch(url, init), 30000))
+}
+
+/** Downloads a text file through a local SOCKS port. */
+export async function fetchTextVia(port: number, url: string): Promise<string> {
+  const res = await fetcherVia(port)(url)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return withTimeout(res.text(), 30000)
+}
+
 /** Looks up the exit location through the VPN-only SOCKS port. Undefined if every source fails. */
 export async function lookupExit(probePort: number): Promise<ExitLocation | undefined> {
   // A private session so the proxy setting never touches the app window's own requests.

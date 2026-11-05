@@ -425,7 +425,7 @@ function ServerPicker({
   const groups = [
     { label: t('Free'), items: servers.filter(isWarp) },
     ...subscriptions.map((s) => ({
-      label: s.name || t('Subscription'),
+      label: s.public ? t('Public configs') : s.name || t('Subscription'),
       items: servers.filter((x) => x.subscriptionId === s.id)
     })),
     {

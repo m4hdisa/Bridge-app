@@ -140,6 +140,36 @@ export function createMockBridge(): BridgeApi {
       state.pinging = []
       emitState()
     },
+    setWarpKey: async (key) => {
+      await new Promise((r) => setTimeout(r, 1200))
+      if (!/^[A-Za-z0-9]{8}(-[A-Za-z0-9]{8}){2}$/.test(key.trim())) throw new Error("That doesn't look like a WARP+ key. It has three groups of eight letters and digits, like AAAAAAAA-BBBBBBBB-CCCCCCCC")
+      state.warpPlus = { accountType: 'unlimited', at: Date.now() }
+      emitState()
+    },
+    clearWarpKey: async () => {
+      delete state.warpPlus
+      emitState()
+    },
+    addPublicConfigs: async () => {
+      const id = 'public'
+      if (!state.subscriptions.some((s) => s.id === id)) state.subscriptions.push({ id, name: 'Public configs', url: '', public: true })
+      for (const publicStatus of [{ step: 'download' as const }, { step: 'test' as const, n: 387 }, { step: 'measure' as const, n: 30 }, { step: 'speed' as const, n: 12 }]) {
+        state.publicStatus = publicStatus
+        emitState()
+        await new Promise((r) => setTimeout(r, 1200))
+      }
+      state.publicStatus = undefined
+      state.servers = state.servers.filter((s) => s.subscriptionId !== id)
+      const base = { port: 443, link: '', outbound: { type: 'vless' as const }, protocol: 'vless' as const, subscriptionId: id, engine: 'sing-box' as const }
+      state.servers.push(
+        { ...base, id: 'pub1', name: 'Public 1', server: '203.0.113.21', latency: 240, publicConfig: { downMbps: 38, exit: 'DE' } },
+        { ...base, id: 'pub2', name: 'Public 2', server: '203.0.113.22', latency: 310, publicConfig: { downMbps: 21, exit: 'NL' } },
+        { ...base, id: 'pub3', name: 'Public 3', server: '198.51.100.7', latency: 402, publicConfig: { exit: 'US' } }
+      )
+      Object.assign(state.subscriptions.find((s) => s.id === id)!, { updatedAt: Date.now() })
+      emitState()
+      return { added: 3, errors: [] }
+    },
     addSubscription: async () => ({ added: 0, errors: ['Mock backend cannot fetch'] }),
     updateSubscription: async () => ({ added: 0, errors: [] }),
     removeSubscription: async (id) => {

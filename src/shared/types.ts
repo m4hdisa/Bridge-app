@@ -29,6 +29,8 @@ export interface ServerProfile {
   xrayOnly?: boolean
   /** Set on the built-in free WARP server (engine "aether"); its `outbound` is only a placeholder. */
   warp?: WarpOptions
+  /** Set on configs from public lists, whose operators nobody knows: what was measured when found. Auto only uses them when there is nothing else. */
+  publicConfig?: { downMbps?: number; exit?: string }
 }
 
 /** "aether" runs the built-in free WARP server (Cloudflare WARP, through the Aether core). */
@@ -106,6 +108,8 @@ export interface Subscription {
   skipped?: SkippedConfig[]
   /** Auto-update interval in hours (from the panel's `profile-update-interval` header, default 12). */
   updateHours?: number
+  /** The one that holds configs from public lists. It has no URL of its own. */
+  public?: boolean
 }
 
 /**
@@ -202,6 +206,10 @@ export interface AppState {
   settings: Settings
   /** Servers whose ping is being tested right now. Only in what the window sees; never saved. */
   pinging?: string[]
+  /** Set while the user's own WARP+ key is on the Free WARP account. The key itself isn't kept. */
+  warpPlus?: { accountType: string; at: number }
+  /** What finding public configs is doing right now, with how many it is looking at. Never saved. */
+  publicStatus?: { step: 'download' | 'warp' | 'test' | 'measure' | 'speed'; n?: number }
 }
 
 export type CoreState = 'stopped' | 'starting' | 'running' | 'stopping'
@@ -362,11 +370,16 @@ export interface BridgeApi {
   findWarpConfigs(): Promise<number>
   /** Makes a share link for a WARP server or config, with a new WARP account made just for it. */
   shareWarp(id: string): Promise<string>
+  /** Puts the user's own WARP+ key on the Free WARP account. */
+  setWarpKey(key: string): Promise<void>
+  clearWarpKey(): Promise<void>
   testLatency(ids?: string[]): Promise<void>
 
   addSubscription(name: string, url: string): Promise<ImportResult>
   updateSubscription(id: string): Promise<ImportResult>
   removeSubscription(id: string): Promise<void>
+  /** Downloads public config lists, tests them on this network and keeps the best. */
+  addPublicConfigs(): Promise<ImportResult>
 
   updateSettings(patch: Partial<Settings>): Promise<void>
 
