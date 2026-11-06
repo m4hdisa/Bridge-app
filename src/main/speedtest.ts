@@ -260,6 +260,8 @@ const QUICK_UP_BYTES = 3_000_000
 const QUICK_DOWN_MS = 3000
 const QUICK_UP_MS = 8000
 const QUICK_WARMUP_MS = 500
+/** The part after the warm-up only counts on its own when it lasted at least this long. */
+const QUICK_MIN_MEASURE_MS = 300
 /** Cloudflare answers HTTP 429 to WARP's shared exit addresses when they have asked too much; these others don't. */
 const QUICK_SOURCES = [
   { host: HOST, path: `/__down?bytes=${QUICK_DOWN_BYTES}` },
@@ -320,8 +322,11 @@ async function quickGet(port: number, host: string, path: string, deadlineMs = Q
     deadlineMs
   )
   if (refused || !bytes || lastAt <= firstAt) return undefined
-  // A transfer over before the warm-up ended leaves only the whole of it to go on.
-  const from = mark && lastAt > mark.at ? mark : { at: firstAt, bytes: 0 }
+  // A transfer over before the warm-up ended leaves only the whole of it to go on. So does one that
+  // was nearly over: a last few kilobytes that arrive together once the warm-up ends gave public
+  // configs speeds like 1433 Mbps.
+  const enoughAfter = mark && lastAt - mark.at >= QUICK_MIN_MEASURE_MS && bytes - mark.bytes >= bytes / 4
+  const from = mark && enoughAfter ? mark : { at: firstAt, bytes: 0 }
   return ((bytes - from.bytes) * 8) / (lastAt - from.at) / 1000
 }
 

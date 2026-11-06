@@ -148,6 +148,15 @@ async function main() {
       check(core.status.state === 'running' && core.status.startedAt === startedAt && core.status.serverId === b.profile.id, 'no reconnect: same connection, now on server 2')
       check(!(await core.switchServer(fake)), 'a server not in the config asks for a reconnect instead')
       await core.stop()
+
+      // sing-box remembers the last switch in its cache file; connecting again to server 1 must use server 1.
+      const before2 = seen(b)
+      const a2 = seen(a)
+      await core.start(a.profile, { ...DEFAULT_SETTINGS, mode: 'proxy-only', mixedPort: swapPort, logLevel: 'info' }, [], [b.profile])
+      await through(swapPort)
+      await new Promise((r) => setTimeout(r, 500))
+      check(seen(a) > a2 && seen(b) === before2, `reconnecting uses the server asked for, not the last one switched to (server 1: +${seen(a) - a2}, server 2: +${seen(b) - before2})`)
+      await core.stop()
     } finally {
       for (const s of servers) s.child.kill()
     }

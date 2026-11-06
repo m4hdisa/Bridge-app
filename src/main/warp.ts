@@ -11,6 +11,17 @@ import { WARP_METHODS, type ServerProfile, type WarpFound, type WarpMethod, type
 export const WARP_IDENTITY_FILE = 'aether-masque.toml'
 
 export const WARP_SHARE_SCHEME = 'bridge://warp'
+
+/**
+ * WARP starter accounts, made every day by Bridge-configs (scripts/warp-accounts.ts) from outside
+ * Iran, as share links: GitHub, then a CDN for networks where GitHub's file host is filtered.
+ */
+export const WARP_STARTER_LIST = [
+  'https://raw.githubusercontent.com/m4hdisa/Bridge-configs/main/warp.txt',
+  'https://cdn.jsdelivr.net/gh/m4hdisa/Bridge-configs@main/warp.txt'
+]
+/** Beside the identity file while the account is a public starter one, until the user's own replaces it. */
+export const WARP_STARTER_MARK = 'starter-account'
 /** Fields of Aether's identity file. A share link carrying anything else isn't one of ours. */
 const IDENTITY_FIELDS = new Set(['device_id', 'access_token', 'cert_pem', 'key_pem', 'cert_issued_at', 'ipv4', 'ipv6', 'wg_private_key', 'wg_peer_public_key', 'client_id', 'organization', 'gateway_proxy', 'assigned_endpoint'])
 const MAX_IDENTITY_BYTES = 8192

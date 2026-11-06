@@ -11,7 +11,7 @@ import { networkInterfaces } from 'node:os'
 import { DnsRelay } from './dnsrelay'
 import { pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
-import { GOOL_RETRY_MS, isWarp, parseWarpLine, parseWarpShareLink, prefersForeignExit, WARP_EXIT_REFUSED, WARP_FIND_METHODS, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, waitForH3, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, type PsiphonChain, warpRegisterArgs, warpShareLink, type WarpState } from './warp'
+import { GOOL_RETRY_MS, isWarp, parseWarpLine, parseWarpShareLink, WARP_SHARE_SCHEME, WARP_STARTER_LIST, WARP_STARTER_MARK, prefersForeignExit, WARP_EXIT_REFUSED, WARP_FIND_METHODS, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, waitForH3, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, type PsiphonChain, warpRegisterArgs, warpShareLink, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, hasInternetIpv6, networkInfo, setHostRoutes, setSystemProxy } from './system'
 import { handoffCandidates } from './handoff'
 import { findPathMtu, MTU_TARGETS } from './mtu'
@@ -545,6 +545,51 @@ export class Core extends EventEmitter {
   }
 
   /**
+   * The last resort when Cloudflare's WARP sign-up is blocked and there is no server of the user's
+   * own to make the account through: one of the starter accounts in Bridge's daily list, picked at
+   * random. They are public, so one is only used until replaceStarterAccount makes the user's own
+   * account through the tunnel it opens.
+   */
+  private async useStarterAccount(dir: string): Promise<boolean> {
+    for (const url of WARP_STARTER_LIST) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const links = (await res.text()).split(/\r?\n/).filter((l) => l.startsWith(WARP_SHARE_SCHEME))
+        if (!links.length) throw new Error('the list is empty')
+        writeFileSync(join(dir, WARP_IDENTITY_FILE), parseWarpShareLink(links[Math.floor(Math.random() * links.length)]).identity)
+        writeFileSync(join(dir, WARP_STARTER_MARK), url)
+        this.log("Free WARP: Cloudflare's sign-up is blocked here, so Bridge connects with a starter account from its daily list and then makes your own account through it")
+        return true
+      } catch (e) {
+        this.log(`Free WARP: the starter accounts from ${new URL(url).hostname} didn't come (${e instanceof Error ? e.message : e})`, 'warn')
+      }
+    }
+    return false
+  }
+
+  /**
+   * Swaps a starter account (see useStarterAccount) for the user's own, made through the tunnel
+   * that is up now, where Cloudflare's sign-up can be reached. Used from the next connection.
+   */
+  private async replaceStarterAccount(): Promise<void> {
+    if (!existsSync(join(this.warpDir, WARP_STARTER_MARK)) || !this.probePort) return
+    const dir = join(this.warpDir, `own-${randomUUID()}`)
+    mkdirSync(dir, { recursive: true })
+    try {
+      this.log('Free WARP: making your own WARP account through the tunnel')
+      await this.runAether(warpRegisterArgs(join(dir, 'aether.toml'), [], this.probePort), 60_000)
+      const made = join(dir, WARP_IDENTITY_FILE)
+      if (!existsSync(made)) return this.log('Free WARP: your own account could not be made yet; Bridge tries again next time', 'warn')
+      writeFileSync(join(this.warpDir, WARP_IDENTITY_FILE), readFileSync(made, 'utf8'))
+      rmSync(join(this.warpDir, WARP_STARTER_MARK), { force: true })
+      this.log('Free WARP: your own WARP account is ready and is used from the next connection')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  /**
    * Creates a WARP account in `dir`, trying each way in WARP_REGISTER_TRIES until one works.
    * While connected, the VPN itself is tried first: it reaches a blocked sign-up service.
    */
@@ -571,6 +616,8 @@ export class Core extends EventEmitter {
       checkCancelled()
       if (done()) return this.log('Free WARP: account created')
     }
+    // Only for the user's own account: a link shared with a friend or a WARP+ account must be new.
+    if (dir === this.warpDir && (await this.useStarterAccount(dir))) return
     const via = this.warpHelper?.() ? '' : ' Adding one of your own servers lets Bridge create it through that server.'
     throw new Error(`Free WARP: could not create a WARP account, because Cloudflare's WARP service is blocked on this network right now (see Logs).${via}`)
   }
@@ -1193,7 +1240,12 @@ export class Core extends EventEmitter {
       this.probePort = probePort
       this.tunUp = tun
       this.selectable = new Set(ready.length ? [server.id, ...ready.map((s) => s.id)] : [])
-      if (ready.length) this.log(`${ready.length} more server(s) ready; switching to them needs no reconnect`)
+      if (ready.length) {
+        // sing-box puts the selector back on the server it was last switched to (it keeps that in its
+        // cache file) instead of the one asked for: a user who picked Free WARP stayed on a public config.
+        await clashPut(api, '/proxies/proxy', { name: serverTag(server.id) })
+        this.log(`${ready.length} more server(s) ready; switching to them needs no reconnect`)
+      }
       this.child.once('exit', (code) => this.onUnexpectedExit(code))
       // Apps opened before connecting may have Iran's fake answer (10.10.34.x) for blocked
       // sites in Windows' DNS cache; drop it so they ask again through Bridge's clean DNS.
@@ -1232,6 +1284,7 @@ export class Core extends EventEmitter {
       })
       void this.checkHealth()
       this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS)
+      if (usesWarp && !server.warp?.shared) void this.replaceStarterAccount().catch((e) => this.log(`Free WARP: ${e instanceof Error ? e.message : e}`, 'warn'))
     } catch (e) {
       if (e instanceof Cancelled) {
         // Disconnected while connecting: stop() already cleaned up and reported it. If a newer
