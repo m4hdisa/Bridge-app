@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, SPEED_TEST_PORTS, withServerIp, writeAppRuleSets, type ClashApi } from './config'
-import { connect } from 'node:net'
+import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, serverTag, SPEED_TEST_PORTS, withServerIp, writeAppRuleSets, type ClashApi } from './config'
+import { appSlots, dnsPortOwners, freeDnsAddress, perAppDriverReady, pointDnsHere, restoreDns, startPerApp, startWatchdog, stopPerApp, type PerAppOptions } from './perapp'
+import { connect, isIP } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { DnsRelay } from './dnsrelay'
 import { pickDirectDns, ServerResolver } from './resolve'
@@ -92,7 +93,8 @@ interface ClashConnection {
   upload: number
   download: number
   chains?: string[]
-  metadata: { processPath?: string; network?: string; destinationIP?: string; sourcePort?: string }
+  /** `type` is the inbound, e.g. "socks/apps-in-2". */
+  metadata: { processPath?: string; network?: string; destinationIP?: string; sourcePort?: string; type?: string }
 }
 
 const mbpsText = (v?: number) => (v === undefined ? '-' : v.toFixed(1))
@@ -169,6 +171,9 @@ const RULE_RELOAD_DELAY_MS = 1500
 /** sing-box's line when a Direct connection to an address couldn't be opened in time. */
 const DIRECT_TIMEOUT = /open connection to (\d+\.\d+\.\d+\.\d+):\d+ using outbound\/direct\[direct\]: dial tcp \S+: i\/o timeout/
 const DIRECT_TIMEOUT_FLUSH_MS = 30_000
+/** Per-App inbounds made when connecting through the driver: at least this many, and this many spare. */
+const APP_SLOTS_MIN = 16
+const APP_SLOTS_SPARE = 8
 
 async function clashPost(api: ClashApi, path: string): Promise<void> {
   await fetch(`http://127.0.0.1:${api.port}${path}`, {
@@ -176,6 +181,16 @@ async function clashPost(api: ClashApi, path: string): Promise<void> {
     headers: { Authorization: `Bearer ${api.secret}` },
     signal: AbortSignal.timeout(3000)
   })
+}
+
+async function clashPut(api: ClashApi, path: string, body: unknown): Promise<void> {
+  const res = await fetch(`http://127.0.0.1:${api.port}${path}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${api.secret}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(3000)
+  })
+  if (!res.ok) throw new Error(`Clash API ${path}: HTTP ${res.status} ${await res.text()}`)
 }
 
 async function clashDelete(api: ClashApi, path: string): Promise<void> {
@@ -265,6 +280,18 @@ export class Core extends EventEmitter {
   /** The other tool's adapter that "Other VPN" apps are handed to (TUN modes only), see handoff.ts. */
   private handoffIf?: string
   private handoffIps = new Set<string>()
+  /** True while the TUN adapter is up (Full VPN, or Per-App without its driver). */
+  private tunUp = false
+  /** Per-App through ProxiFyre: its SOCKS details, while it runs (see perapp.ts). */
+  private redirect?: Omit<PerAppOptions, 'rules'>
+  /** The app path behind each Per-App inbound (apps-in-N), for the traffic table. */
+  private slotPaths: string[] = []
+  /** Windows' DNS points at Bridge while this is set (see pointDnsHere). */
+  private dnsPointed = false
+  /** Undoes Per-App if Bridge dies while connected (see startWatchdog). */
+  private watchdog?: ChildProcess
+  /** Servers in the running config's selector; switching between them needs no restart. */
+  private selectable = new Set<string>()
 
   private resolver: ServerResolver
 
@@ -1043,7 +1070,12 @@ export class Core extends EventEmitter {
     }
   }
 
-  async start(server: ServerProfile, settings: Settings, appRules: AppRule[]): Promise<void> {
+  /**
+   * `alternates` are other servers to keep ready in the same config, so switching to one of them
+   * later (switchServer) needs no restart. Only servers sing-box itself runs and that answered
+   * their last test belong here: one broken outbound would stop sing-box from starting at all.
+   */
+  async start(server: ServerProfile, settings: Settings, appRules: AppRule[], alternates: ServerProfile[] = []): Promise<void> {
     if (this.scanningWarp) throw new Error('Bridge is still finding WARP configs; connect when it is done')
     if (this.status.state !== 'stopped') await this.stop()
     if (!existsSync(this.paths.singBox)) throw new Error(`sing-box not found at ${this.paths.singBox}`)
@@ -1058,17 +1090,26 @@ export class Core extends EventEmitter {
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
       const usesXray = server.engine === 'xray'
       const usesWarp = isWarp(server)
-      const tun = usesTun(settings.mode)
-      const net: Awaited<ReturnType<typeof networkInfo>> = tun ? await networkInfo() : { dnsServers: [], otherTunnels: [], defaultRoutes: [], bindPhysical: false }
-      if (net.defaultRoutes.length) this.log(`Default routes before connecting: ${net.defaultRoutes.join(', ')}`)
-      const [localDns, pinned] = await Promise.all([
-        tun ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
+      // Per-App hands only the chosen apps to Bridge through ProxiFyre when its driver is installed,
+      // and falls back to the VPN adapter (which every app's traffic passes) when it isn't.
+      const redirect = settings.mode === 'per-app' && (await perAppDriverReady())
+      if (settings.mode === 'per-app' && !redirect) {
+        this.log('The Per-App driver (ProxiFyre) is not installed, so Per-App uses the VPN adapter; connecting and disconnecting can interrupt apps that are not on the VPN, such as games. Install it from the Apps page.', 'warn')
+      }
+      const tun = usesTun(settings.mode) && !redirect
+      // Both need Bridge's own clean DNS: TUN answers every app's lookups, and so does Per-App (see pointDnsHere).
+      const ownDns = tun || redirect
+      const net: Awaited<ReturnType<typeof networkInfo>> = ownDns ? await networkInfo() : { dnsServers: [], otherTunnels: [], defaultRoutes: [], bindPhysical: false }
+      if (tun && net.defaultRoutes.length) this.log(`Default routes before connecting: ${net.defaultRoutes.join(', ')}`)
+      const [localDns, pinned, ready] = await Promise.all([
+        ownDns ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
         // In TUN modes Xray goes straight out of the real adapter instead of looping through TUN.
-        usesWarp ? this.viaWarp(server, gen) : usesXray ? (this.progress('Starting Xray'), this.viaXray(server, tun ? net.interfaceAlias : undefined)) : this.pinAddress(server)
+        usesWarp ? this.viaWarp(server, gen) : usesXray ? (this.progress('Starting Xray'), this.viaXray(server, tun ? net.interfaceAlias : undefined)) : this.pinAddress(server),
+        this.pinAlternates(alternates)
       ])
       this.checkCancelled(gen)
       if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? `DNS-over-HTTPS ${localDns.working?.join(', ')}` : `DNS ${localDns.server}`}`)
-      else if (tun) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
+      else if (ownDns) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
       if (localDns?.working?.length) {
         // Answers every app's lookups, so one stalled connection can't hold them all up (see dnsrelay.ts).
         this.dnsRelay = new DnsRelay({
@@ -1086,11 +1127,34 @@ export class Core extends EventEmitter {
       const defaultInterface = net.bindPhysical ? net.interfaceAlias : undefined
       if (net.otherTunnels.length) this.log(`Other tunnels are active: ${net.otherTunnels.join(', ')}. They may conflict with Bridge.`, 'warn')
       if (defaultInterface) this.log(`Bridge traffic is bound to "${defaultInterface}" to stay out of other tunnels`)
-      if (net.otherInterface) this.log(`Apps set to "Other VPN" go through "${net.otherInterface}"`)
-      else if (appRules.some((r) => r.enabled && r.action === 'other')) this.log('No other VPN adapter found; apps set to "Other VPN" go direct', 'warn')
+      // With ProxiFyre, apps set to "Other VPN" are simply left alone, so they keep the other tool's route.
+      if (tun && net.otherInterface) this.log(`Apps set to "Other VPN" go through "${net.otherInterface}"`)
+      else if (tun && appRules.some((r) => r.enabled && r.action === 'other')) this.log('No other VPN adapter found; apps set to "Other VPN" go direct', 'warn')
       const noIpv6 = tun && !hasInternetIpv6(net.interfaceAlias)
       if (noIpv6) this.log('This network has no IPv6, so the VPN adapter is IPv4 only')
       else if (tun) this.log(`"${net.interfaceAlias ?? 'A network adapter'}" has IPv6, so the VPN adapter keeps IPv6 too`)
+      // One inbound per app on the VPN, plus spares, so apps added while connected get their own too.
+      const slots = redirect ? Math.max(APP_SLOTS_MIN, appSlots(appRules, Infinity).length + APP_SLOTS_SPARE) : 0
+      const redirectTo: PerAppOptions | undefined = redirect
+        ? {
+            ports: await Promise.all(Array.from({ length: slots }, () => freePort())),
+            blockPort: await freePort(),
+            user: randomUUID().slice(0, 8),
+            password: randomUUID(),
+            rules: appRules,
+            exclude: this.ownPrograms()
+          }
+        : undefined
+      // Pointing Windows' DNS at Bridge only helps with clean answers (DNS-over-HTTPS); without them
+      // Bridge's own lookups would go through Windows and so back to itself. It can only be port 53.
+      const cleanDns = localDns?.type === 'https'
+      const dnsAddress = redirect && cleanDns ? await freeDnsAddress() : undefined
+      const dnsListen = dnsAddress ? { address: dnsAddress, port: 53 } : undefined
+      if (redirect && !cleanDns) this.log('DNS-over-HTTPS is not reachable on this network, so apps on the VPN keep your normal DNS; blocked sites (such as Discord) may not open in them', 'warn')
+      else if (redirect && !dnsListen) {
+        const owners = await dnsPortOwners().catch(() => '')
+        this.log(`Port 53 is in use by another program${owners ? ` (${owners})` : ''}, so apps on the VPN keep your normal DNS; blocked sites (such as Discord) may not open in them. Close that program or turn off its DNS, then reconnect.`, 'warn')
+      } else if (dnsAddress && dnsAddress !== '127.0.0.1') this.log(`127.0.0.1:53 is taken, so Bridge answers Windows' DNS on ${dnsAddress}`)
       const config = buildConfig({
         noIpv6,
         server: pinned,
@@ -1106,8 +1170,11 @@ export class Core extends EventEmitter {
         // (which can't be bound on Windows, so it does reach TUN) must not loop back into the VPN.
         bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : usesWarp && this.paths.aether ? [this.paths.aether] : undefined,
         defaultInterface,
-        otherInterface: net.otherInterface,
-        probePort
+        otherInterface: tun ? net.otherInterface : undefined,
+        probePort,
+        alternates: ready,
+        redirect: redirectTo,
+        dnsListen
       })
       const configFile = join(this.paths.dataDir, 'config.json')
       writeFileSync(configFile, JSON.stringify(config, null, 2))
@@ -1118,16 +1185,33 @@ export class Core extends EventEmitter {
       // Disconnected while sing-box was starting: stop() couldn't see this process yet.
       if (this.status.state !== 'starting' || gen !== this.startGen) {
         await killProcess(child)
-        if (usesTun(settings.mode)) await flushDns()
+        if (tun) await flushDns()
         throw new Cancelled()
       }
       this.child = child
       this.api = api
       this.probePort = probePort
+      this.tunUp = tun
+      this.selectable = new Set(ready.length ? [server.id, ...ready.map((s) => s.id)] : [])
+      if (ready.length) this.log(`${ready.length} more server(s) ready; switching to them needs no reconnect`)
       this.child.once('exit', (code) => this.onUnexpectedExit(code))
       // Apps opened before connecting may have Iran's fake answer (10.10.34.x) for blocked
       // sites in Windows' DNS cache; drop it so they ask again through Bridge's clean DNS.
       if (tun) await flushDns()
+      if (redirectTo) {
+        this.watchdog = startWatchdog(process.pid)
+        if (dnsListen) {
+          this.progress('Pointing Windows DNS at Bridge')
+          this.dnsPointed = true
+          await pointDnsHere(dnsListen.address, net.dnsServers).catch((e) => this.log(`Could not point Windows DNS at Bridge: ${e instanceof Error ? e.message : e}`, 'warn'))
+        }
+        this.progress('Starting the Per-App driver')
+        this.redirect = redirectTo
+        this.slotPaths = appSlots(appRules, redirectTo.ports.length).map((a) => a.path)
+        await startPerApp(redirectTo, log)
+        this.checkCancelled(gen)
+        this.log(`Per-App: ${appRules.filter((r) => r.enabled && r.action === 'proxy').length} app(s) go through the VPN; nothing else on this PC was changed`)
+      }
 
       if (settings.mode === 'system-proxy' && this.paths.manageSystemProxy !== false) {
         await setSystemProxy(settings.mixedPort)
@@ -1188,7 +1272,7 @@ export class Core extends EventEmitter {
     const probePort = this.probePort
     if (this.status.state !== 'running' || !settings || !probePort) throw new Error('Connect first, then run the speed test')
     const result: SpeedTestResult = { core: { usedBytes: 0 }, serverName: server.name, mode: settings.mode, tunStack: settings.tunStack, tunMtu: settings.tunMtu, at: Date.now() }
-    if (usesTun(settings.mode)) {
+    if (this.tunUp) {
       const findAddress = async (host: string) => (await this.resolver.resolve(host))?.ip
       result.adapter = await runPath(adapterDialer(findAddress), (phase, mbps) => onProgress('adapter', phase, mbps), () => this.speedTestRoute().catch(() => undefined), signal)
       this.log(`Speed test through the VPN adapter (stack ${settings.tunStack}, MTU ${settings.tunMtu || 'auto'}): ${speedLine(result.adapter)}`)
@@ -1201,7 +1285,7 @@ export class Core extends EventEmitter {
   /** Finds the largest packet the network carries, toward the VPN server if it answers ping. */
   async findMtu(server?: ServerProfile): Promise<MtuResult> {
     const ip = server && !isWarp(server) ? (await this.resolver.resolve(server.server).catch(() => undefined))?.ip : undefined
-    const running = this.status.state === 'running' && !!this.settings && usesTun(this.settings.mode)
+    const running = this.status.state === 'running' && this.tunUp
     const result = await findPathMtu(ip ? [ip, ...MTU_TARGETS] : MTU_TARGETS, running ? this.directSource : undefined)
     this.log(`Largest packet on this network: ${result.pathMtu} bytes (tested against ${result.target === ip ? 'the VPN server' : result.target})`)
     return result
@@ -1274,10 +1358,24 @@ export class Core extends EventEmitter {
    * are then closed so those apps reconnect through their new route; nothing else
    * on the system is interrupted.
    */
-  async updateAppRules(rules: AppRule[], affectedPaths: string[]): Promise<void> {
+  async updateAppRules(rules: AppRule[], affectedPaths: string[]): Promise<boolean> {
     writeAppRuleSets(this.appRulesDir, rules)
+    // ProxiFyre reads its rules when it starts; restarting it only interrupts the apps it redirects.
+    if (this.redirect && this.status.state === 'running') {
+      // More apps on the VPN than inbounds: the caller reconnects, which makes enough of them.
+      if (appSlots(rules, Infinity).length > this.redirect.ports.length) return true
+      const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
+      await startPerApp({ ...this.redirect, rules }, log).then(
+        () => {
+          this.slotPaths = appSlots(rules, this.redirect?.ports.length ?? 1).map((a) => a.path)
+          this.log('App list applied to the Per-App driver')
+        },
+        (e) => this.log(`Per-App: could not apply the app list: ${e instanceof Error ? e.message : e}`, 'error')
+      )
+      return false
+    }
     const api = this.api
-    if (this.status.state !== 'running' || !api || !affectedPaths.length) return
+    if (this.status.state !== 'running' || !api || !affectedPaths.length) return false
     await new Promise((r) => setTimeout(r, RULE_RELOAD_DELAY_MS))
     // Same matching as the rules themselves (version folders match any version).
     const affected = affectedPaths.map((p) => new RegExp(processPathRegex(p).replace('(?i)', ''), 'i'))
@@ -1289,6 +1387,45 @@ export class Core extends EventEmitter {
     } catch (e) {
       this.log(`Could not reset app connections: ${e instanceof Error ? e.message : e}`, 'warn')
     }
+    return false
+  }
+
+  /** Bridge's own programs, which the Per-App driver must never hand back to Bridge. */
+  private ownPrograms(): string[] {
+    return [process.execPath, this.paths.singBox, this.paths.xray, this.paths.aether, this.paths.psiphon].filter((p): p is string => !!p)
+  }
+
+  /**
+   * Resolves the alternates' server names the same careful way as the server in use (never
+   * through the VPN itself). Servers that don't resolve within a few seconds are left out.
+   */
+  private async pinAlternates(servers: ServerProfile[]): Promise<ServerProfile[]> {
+    if (!servers.length) return []
+    const deadline = new Promise<undefined>((r) => setTimeout(() => r(undefined), 4000))
+    const pinned = await Promise.all(servers.map((s) => Promise.race([this.pinAddress(s, true).catch(() => undefined), deadline])))
+    return pinned.filter((s): s is ServerProfile => !!s && typeof s.outbound.server === 'string' && isIP(s.outbound.server) !== 0)
+  }
+
+  /** Whether switchServer can move to this server without a restart. */
+  canSwitchTo(id: string): boolean {
+    return this.status.state === 'running' && this.selectable.has(id)
+  }
+
+  /**
+   * Moves the VPN to another server that is already in the running config, like v2rayN does:
+   * no restart, the adapter and every Direct connection stay as they are. Returns false when the
+   * server isn't in the config, and the caller reconnects instead.
+   */
+  async switchServer(server: ServerProfile): Promise<boolean> {
+    const api = this.api
+    if (!api || !this.canSwitchTo(server.id)) return false
+    if (this.status.serverId === server.id) return true
+    await clashPut(api, '/proxies/proxy', { name: serverTag(server.id) })
+    this.wonWarp = undefined
+    this.log(`Switched to ${server.name} without reconnecting`)
+    this.setStatus({ ...this.status, serverId: server.id, health: undefined, exit: undefined, switchedAt: Date.now() })
+    void this.checkHealth()
+    return true
   }
 
   async stop(): Promise<void> {
@@ -1320,7 +1457,22 @@ export class Core extends EventEmitter {
     if (handoffIf && handedOff.length) {
       await setHostRoutes(handedOff, handoffIf, false).catch((e) => this.log(`Could not remove the routes to "${handoffIf}": ${e}`, 'warn'))
     }
-    const usedTun = !!this.child && !!this.settings && usesTun(this.settings.mode)
+    const usedTun = !!this.child && this.tunUp
+    this.tunUp = false
+    this.selectable.clear()
+    // Apps stop being handed to Bridge before sing-box goes away, so none is left pointing at a closed port.
+    if (this.redirect) {
+      this.redirect = undefined
+      this.slotPaths = []
+      await stopPerApp().catch((e) => this.log(`Could not stop the Per-App driver: ${e instanceof Error ? e.message : e}`, 'warn'))
+    }
+    if (this.dnsPointed) {
+      this.dnsPointed = false
+      await restoreDns().catch((e) => this.log(`Could not give Windows its own DNS back: ${e instanceof Error ? e.message : e}`, 'warn'))
+    }
+    // Everything it would undo is undone; it is Bridge's own child, so ending it by handle is safe.
+    this.watchdog?.kill()
+    this.watchdog = undefined
     if (this.proxyPort !== undefined) {
       await clearSystemProxy(this.proxyPort).catch((e) => this.log(`Could not clear system proxy: ${e}`, 'warn'))
       this.proxyPort = undefined
@@ -1348,7 +1500,7 @@ export class Core extends EventEmitter {
   private onUnexpectedExit(code: number | null): void {
     this.log(`sing-box stopped unexpectedly (exit code ${code})`, 'error')
     this.child = undefined
-    if (this.settings && usesTun(this.settings.mode)) void flushDns()
+    if (this.tunUp) void flushDns()
     void this.cleanup().then(() => this.setStatus({ state: 'stopped', error: 'Core stopped unexpectedly, see Logs' }))
   }
 
@@ -1372,13 +1524,18 @@ export class Core extends EventEmitter {
       const live = new Map<string, number>()
       const routes = new Map<string, Set<string>>()
       for (const c of snap.connections || []) {
-        const path = c.metadata.processPath || ''
-        const outbound = c.chains?.[0]
+        // Through the Per-App driver the program is always ProxiFyre; the inbound says which app it is.
+        const slot = c.metadata.type?.match(/\/apps-in-(\d+)$/)?.[1]
+        const path = (slot !== undefined && this.slotPaths[Number(slot)]) || c.metadata.processPath || ''
+        // Through the selector the chain ends in the server's own tag; it is still the VPN.
+        const outbound = c.chains?.includes('proxy') ? 'proxy' : c.chains?.[0]
         if (outbound) routes.set(path, (routes.get(path) || new Set()).add(outbound))
         const prev = this.seenConns.get(c.id) || { path, up: 0, down: 0 }
         let app = this.appTotals.get(path)
         if (!app) {
-          app = { path, name: path ? path.split('\\').pop()! : 'Other / system', upload: 0, download: 0, connections: 0 }
+          // With the Per-App driver, every app on the VPN reaches sing-box through ProxiFyre.
+          const name = !path ? 'Other / system' : this.redirect && /\\ProxiFyre\.exe$/i.test(path) ? 'Apps on VPN (Per-App driver)' : path.split('\\').pop()!
+          app = { path, name, upload: 0, download: 0, connections: 0 }
           this.appTotals.set(path, app)
         }
         app.upload += Math.max(0, c.upload - prev.up)

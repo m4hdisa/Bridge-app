@@ -53,6 +53,7 @@ export function createMockBridge(): BridgeApi {
   let total = { up: 0, down: 0 }
   let speedTest: SpeedTestStatus = { running: false }
   let speedAborted = false
+  let perAppDriver = false
   const speedListeners = new Set<Listener<SpeedTestStatus>>()
 
   const emitState = () => listeners.state.forEach((l) => l(structuredClone(state)))
@@ -298,6 +299,11 @@ export function createMockBridge(): BridgeApi {
     },
     isAdmin: async () => true,
     relaunchAsAdmin: async () => undefined,
+    perAppDriver: async () => perAppDriver,
+    installPerAppDriver: async () => {
+      await wait(2500)
+      return (perAppDriver = true)
+    },
     onState: sub(listeners.state),
     onStatus: sub(listeners.status),
     onStats: sub(listeners.stats),

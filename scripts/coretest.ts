@@ -1,7 +1,8 @@
 // Safe core test: starts sing-box with only a local proxy on 127.0.0.1 (no TUN, no
 // system proxy change), checks the Clash API, sends a request through the local proxy,
 // runs the latency test flow, then stops. Safe to run on a VPS.
-import { mkdtempSync, rmSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -103,6 +104,54 @@ async function main() {
   const mixed = await core.testLatency([fake, broken, fake2], DEFAULT_SETTINGS.testUrl)
   check(mixed.size === 3 && mixed.get('broken') === -1, `broken server skipped, others still tested (${[...mixed.entries()].map(([k, v]) => `${k.slice(0, 6)}=${v}`).join(' ')})`)
   check(core.logs.some((l) => /skipping "Broken"/.test(l.text)), 'skip is explained in the log')
+
+  console.log('Switching servers without reconnecting (two local VLESS servers)')
+  {
+    const uuid = 'b831381d-6324-4d53-ad4f-8cda48b30811'
+    const servers = [port + 11, port + 12].map((p, i) => {
+      const log = join(dataDir, `server-${i}.log`)
+      const file = join(dataDir, `server-${i}.json`)
+      writeFileSync(file, JSON.stringify({
+        log: { level: 'info', output: log },
+        inbounds: [{ type: 'vless', listen: '127.0.0.1', listen_port: p, users: [{ uuid }] }],
+        outbounds: [{ type: 'direct' }]
+      }))
+      const child = spawn(join(root, 'resources', 'core', 'sing-box.exe'), ['run', '-c', file], { windowsHide: true })
+      return { child, log, profile: parseLink(`vless://${uuid}@127.0.0.1:${p}?security=none&type=tcp#Local-${i + 1}`) }
+    })
+    try {
+      await new Promise((r) => setTimeout(r, 1500))
+      const [a, b] = servers
+      const swapPort = port + 13
+      await core.start(a.profile, { ...DEFAULT_SETTINGS, mode: 'proxy-only', mixedPort: swapPort, logLevel: 'info' }, [], [b.profile])
+      const startedAt = core.status.startedAt
+      const seen = (s: typeof a) => (existsSync(s.log) ? readFileSync(s.log, 'utf8').match(/example\.com/g)?.length ?? 0 : 0)
+      const through = (p: number) =>
+        new Promise<void>((resolve) => {
+          const req = request({ host: '127.0.0.1', port: p, method: 'GET', path: 'http://example.com/', headers: { Host: 'example.com' }, timeout: 8000 }, (res) => {
+            res.resume()
+            res.on('end', resolve)
+          })
+          req.on('error', () => resolve())
+          req.on('timeout', () => req.destroy())
+          req.end()
+        })
+      await through(swapPort)
+      await new Promise((r) => setTimeout(r, 500))
+      const a1 = seen(a)
+      check(a1 > 0 && seen(b) === 0, `first server carries the traffic (server 1: ${a1}, server 2: ${seen(b)})`)
+      check(core.canSwitchTo(b.profile.id), 'second server is ready in the running config')
+      check(await core.switchServer(b.profile), 'switched to the second server')
+      await through(swapPort)
+      await new Promise((r) => setTimeout(r, 500))
+      check(seen(b) > 0 && seen(a) === a1, `after switching, the second server carries it (server 1: ${seen(a)}, server 2: ${seen(b)})`)
+      check(core.status.state === 'running' && core.status.startedAt === startedAt && core.status.serverId === b.profile.id, 'no reconnect: same connection, now on server 2')
+      check(!(await core.switchServer(fake)), 'a server not in the config asks for a reconnect instead')
+      await core.stop()
+    } finally {
+      for (const s of servers) s.child.kill()
+    }
+  }
 
   console.log('Xray server (proxy-only mode)')
   const xrayServer = parseLink('vless://b831381d-6324-4d53-ad4f-8cda48b30811@127.0.0.1:9?encryption=none&security=reality&sni=www.microsoft.com&fp=chrome&pbk=dLN2Ibq5VLAB9qG5RveB10JA-pJctpgW7BT7_cfC6Sw&sid=6ba8&type=xhttp&path=%2Fx#Fake-XHTTP')

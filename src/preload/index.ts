@@ -46,6 +46,8 @@ const api: BridgeApi = {
   findMtu: invoke('findMtu'),
   isAdmin: invoke('isAdmin'),
   relaunchAsAdmin: invoke('relaunchAsAdmin'),
+  perAppDriver: invoke('perAppDriver'),
+  installPerAppDriver: invoke('installPerAppDriver'),
   onState: subscribe('state'),
   onStatus: subscribe('status'),
   onStats: subscribe('stats'),

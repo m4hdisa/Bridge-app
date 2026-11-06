@@ -109,6 +109,79 @@ async function fetchAether() {
   console.log(`Aether ${AETHER_VERSION} -> ${aetherDir}`)
 }
 
+// The Per-App driver (see src/main/perapp.ts), installed without the internet, since GitHub and
+// Microsoft downloads are often blocked or slow from Iran: ProxiFyre, Windows Packet Filter (its
+// EULA allows including it in free products, with the EULA) and the Visual C++ runtime ProxiFyre
+// pins. All unmodified, checked against pinned hashes, and kept as .bin so the build never signs
+// (and so changes) them. scripts/install-driver.ps1 installs them.
+const PROXIFYRE_VERSION = '2.6.4'
+const proxifyreDir = join(root, 'resources', 'proxifyre')
+const DRIVER_FILES = [
+  {
+    file: `ProxiFyre-${PROXIFYRE_VERSION}-win-x64.msi.bin`,
+    url: `https://github.com/wiresock/proxifyre/releases/download/v${PROXIFYRE_VERSION}/ProxiFyre-${PROXIFYRE_VERSION}-win-x64.msi`,
+    sha256: 'ef64b295485cd16ad3e41a6b7d56e7ab46da2093ff64389edc17545157777de1'
+  },
+  {
+    file: 'WindowsPacketFilter-3.6.2.1-x64.msi.bin',
+    url: 'https://github.com/wiresock/ndisapi/releases/download/v3.6.2/Windows.Packet.Filter.3.6.2.1.x64.msi',
+    sha256: '9c388c0b7f189f7fa98720bae2caecf7d64f30910838b80b438ecf8956b8502c'
+  },
+  {
+    // The exact build ProxiFyre 2.6.4's own setup installs (its scripts/Build-Installer.ps1).
+    file: 'VC_redist-14.44.35211-x64.exe.bin',
+    url: 'https://download.visualstudio.microsoft.com/download/pr/0b44c2d1-8944-4834-a01a-c9a225f8088a/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe',
+    sha256: 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+  }
+]
+
+async function fetchProxiFyre() {
+  rmSync(proxifyreDir, { recursive: true, force: true })
+  mkdirSync(proxifyreDir, { recursive: true })
+  for (const { file, url, sha256 } of DRIVER_FILES) {
+    console.log(`Downloading ${url}`)
+    const bytes = await download(url)
+    const actual = createHash('sha256').update(bytes).digest('hex')
+    if (actual !== sha256) throw new Error(`${file}: checksum mismatch, got ${actual}, expected ${sha256}`)
+    writeFileSync(join(proxifyreDir, file), bytes)
+  }
+  cpSync(join(root, 'scripts', 'install-driver.ps1'), join(proxifyreDir, 'install-driver.ps1'))
+  // Windows Packet Filter's EULA must go with every copy: take it from the MSI itself.
+  const eula = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$i = New-Object -ComObject WindowsInstaller.Installer; ` +
+        `$db = $i.GetType().InvokeMember('OpenDatabase','InvokeMethod',$null,$i,@('${join(proxifyreDir, DRIVER_FILES[1].file)}',0)); ` +
+        `$v = $db.GetType().InvokeMember('OpenView','InvokeMethod',$null,$db,@("SELECT Text FROM Control WHERE Type='ScrollableText'")); ` +
+        `$v.GetType().InvokeMember('Execute','InvokeMethod',$null,$v,$null); ` +
+        `$r = $v.GetType().InvokeMember('Fetch','InvokeMethod',$null,$v,$null); ` +
+        `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $r.GetType().InvokeMember('StringData','GetProperty',$null,$r,1)`
+    ],
+    { encoding: 'utf8', windowsHide: true }
+  )
+  if (!eula.includes('Windows Packet Filter')) throw new Error('Could not read the Windows Packet Filter EULA from its MSI')
+  writeFileSync(join(proxifyreDir, 'WindowsPacketFilter-EULA.rtf'), eula.trim())
+  writeFileSync(join(proxifyreDir, 'ProxiFyre-LICENSE.txt'), await download(`https://raw.githubusercontent.com/wiresock/proxifyre/v${PROXIFYRE_VERSION}/LICENSE`))
+  writeFileSync(
+    join(proxifyreDir, 'SOURCE.txt'),
+    [
+      'The Per-App driver, installed by install-driver.ps1. Every file is the official one, unmodified; ".bin" is only',
+      "added to the name so Bridge's build leaves it untouched.",
+      '',
+      `${DRIVER_FILES[0].file}: ProxiFyre ${PROXIFYRE_VERSION}, AGPL-3.0 (ProxiFyre-LICENSE.txt).`,
+      `  Source code: https://github.com/wiresock/proxifyre/tree/v${PROXIFYRE_VERSION}`,
+      `${DRIVER_FILES[1].file}: Windows Packet Filter 3.6.2.1 by NT KERNEL, freeware for non-commercial use,`,
+      '  included in this free product as its EULA allows (WindowsPacketFilter-EULA.rtf). https://www.ntkernel.com/windows-packet-filter/',
+      `${DRIVER_FILES[2].file}: Microsoft Visual C++ Redistributable 14.44.35211 (x64), redistributable under its Microsoft license.`,
+      ''
+    ].join('\r\n')
+  )
+  console.log(`Per-App driver files -> ${proxifyreDir}`)
+}
+
 async function fetchRules() {
   mkdirSync(rulesDir, { recursive: true })
   for (const [file, url] of Object.entries(RULE_SETS)) {
@@ -121,6 +194,7 @@ async function fetchRules() {
 await fetchCore()
 await fetchXray()
 await fetchAether()
+await fetchProxiFyre()
 await fetchRules()
 if (!existsSync(join(coreDir, 'sing-box.exe'))) throw new Error('sing-box.exe missing after extraction')
 if (!existsSync(join(xrayDir, 'xray.exe'))) throw new Error('xray.exe missing after extraction')

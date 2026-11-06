@@ -14,6 +14,8 @@ extraResources:
     to: aether
   - from: resources/rules
     to: rules
+  - from: resources/proxifyre
+    to: proxifyre
   - from: resources/icon.png
     to: icon.png
 win:
@@ -27,4 +29,6 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  # The optional Per-App driver page (see build/installer.nsh).
+  include: build/installer.nsh
   shortcutName: Bridge

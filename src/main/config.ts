@@ -45,6 +45,28 @@ export interface BuildOptions {
    * IPv6 here, so those connections fail (Discord's voice never got past this next to EZConnect).
    */
   noIpv6?: boolean
+  /**
+   * Other servers to keep ready next to `server`: with them, "proxy" is a selector, so switching
+   * servers while connected is one Clash API call instead of a restart that drops everything.
+   */
+  alternates?: ServerProfile[]
+  /**
+   * Per-App through ProxiFyre instead of TUN: the chosen apps reach sing-box through this SOCKS
+   * inbound and apps set to Block through `blockPort`; nothing else on the system is touched.
+   */
+  redirect?: { ports: number[]; user: string; password: string; blockPort: number }
+  /** Where Windows' DNS is pointed while redirecting (see perapp.ts): a loopback address, port 53. */
+  dnsListen?: { address: string; port: number }
+}
+
+/** The SOCKS inbound the Per-App driver hands one app on the VPN to (see perapp.ts appSlots). */
+export function appsInbound(slot: number): string {
+  return `apps-in-${slot}`
+}
+
+/** The selector's tag for one server; "proxy" itself always means whichever server is selected. */
+export function serverTag(id: string): string {
+  return `server-${id}`
 }
 
 type Json = Record<string, unknown>
@@ -150,7 +172,7 @@ function buildDns(o: BuildOptions, useTun: boolean, iranRules: boolean): Json {
 /** Builds the config and writes the app rule-set files it points to. */
 export function buildConfig(o: BuildOptions): Json {
   const { settings } = o
-  const useTun = usesTun(settings.mode)
+  const useTun = usesTun(settings.mode) && !o.redirect
   const iranRules = settings.bypassIran && o.rulesDir
   writeAppRuleSets(o.appRulesDir, o.appRules)
 
@@ -158,6 +180,14 @@ export function buildConfig(o: BuildOptions): Json {
     { type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: settings.mixedPort }
   ]
   if (o.probePort) inbounds.push({ type: 'socks', tag: 'probe-in', listen: '127.0.0.1', listen_port: o.probePort })
+  if (o.redirect) {
+    const users = [{ username: o.redirect.user, password: o.redirect.password }]
+    inbounds.push(
+      ...o.redirect.ports.map((port, i) => ({ type: 'socks', tag: appsInbound(i), listen: '127.0.0.1', listen_port: port, users })),
+      { type: 'socks', tag: 'block-in', listen: '127.0.0.1', listen_port: o.redirect.blockPort, users }
+    )
+  }
+  if (o.dnsListen) inbounds.push({ type: 'direct', tag: 'dns-in', listen: o.dnsListen.address, listen_port: o.dnsListen.port })
   if (useTun) {
     inbounds.unshift({
       type: 'tun',
@@ -181,6 +211,8 @@ export function buildConfig(o: BuildOptions): Json {
   const routeRules: Json[] = [
     { action: 'sniff' },
     { protocol: 'dns', action: 'hijack-dns' },
+    ...(o.dnsListen ? [{ inbound: ['dns-in'], action: 'hijack-dns' }] : []),
+    ...(o.redirect ? [{ inbound: ['block-in'], action: 'reject' }] : []),
     ...(o.probePort ? [{ inbound: ['probe-in'], outbound: 'proxy' }] : []),
     ...(useTun ? [{ inbound: ['tun-in'], source_port_range: [`${SPEED_TEST_PORTS.first}:${SPEED_TEST_PORTS.last}`], outbound: 'proxy' }] : []),
     { ip_is_private: true, outbound: 'direct' }
@@ -194,6 +226,7 @@ export function buildConfig(o: BuildOptions): Json {
     routeRules.push({ domain_suffix: ['.ir'], outbound: 'direct' })
     if (iranRules) routeRules.push({ rule_set: ['geosite-ir', 'geoip-ir'], outbound: 'direct' })
   }
+  if (o.redirect) routeRules.push({ inbound: o.redirect.ports.map((_, i) => appsInbound(i)), outbound: 'proxy' })
   if (settings.mode === 'per-app') {
     routeRules.push({ rule_set: ['apps-proxy'], outbound: 'proxy' })
     // Apps pointed at Bridge's local proxy on purpose (e.g. Telegram's proxy setting) want
@@ -235,7 +268,7 @@ export function buildConfig(o: BuildOptions): Json {
     dns: buildDns(o, useTun, !!iranRules),
     inbounds,
     outbounds: [
-      { ...normalizeOutbound(o.server.outbound), tag: 'proxy' },
+      ...serverOutbounds(o.server, o.alternates),
       { type: 'direct', tag: 'direct' },
       // Apps set to "Other VPN" leave through the other tool's adapter, so that tool
       // (e.g. EZConnect) carries them; without one they simply go direct.
@@ -244,6 +277,20 @@ export function buildConfig(o: BuildOptions): Json {
     route,
     experimental
   }
+}
+
+/**
+ * The VPN server as "proxy". With alternates, "proxy" is a selector over all of them; switching
+ * closes only the connections that went through the old server, never Direct ones.
+ */
+function serverOutbounds(server: ServerProfile, alternates: ServerProfile[] = []): Json[] {
+  const others = alternates.filter((s) => s.id !== server.id)
+  if (!others.length) return [{ ...normalizeOutbound(server.outbound), tag: 'proxy' }]
+  const members = [server, ...others]
+  return [
+    { type: 'selector', tag: 'proxy', outbounds: members.map((s) => serverTag(s.id)), default: serverTag(server.id), interrupt_exist_connections: true },
+    ...members.map((s) => ({ ...normalizeOutbound(s.outbound), tag: serverTag(s.id) }))
+  ]
 }
 
 /** A plain local SOCKS proxy into one server, nothing else: used to create the WARP account through it. */

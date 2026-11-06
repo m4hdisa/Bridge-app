@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppWindow, Ban, FolderOpen, Globe, Info, LoaderCircle, Plus, Search, Shield, Split, Trash2, Waypoints } from 'lucide-react'
+import { AppWindow, Ban, Download, FolderOpen, Globe, Info, LoaderCircle, Plus, Search, Shield, ShieldCheck, Split, Trash2, TriangleAlert, Waypoints } from 'lucide-react'
 import type { AppAction, AppRule, RunningProcess } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { cn } from '@/lib/utils'
@@ -87,6 +87,8 @@ export function Apps({ state, run }: PageProps) {
           <AlertDescription>{t(help.text)}</AlertDescription>
         </Alert>
 
+        {mode === 'per-app' && <DriverCard run={run} />}
+
         <Card className="gap-4 py-4">
           <CardContent className="flex flex-col gap-3">
             <div className="flex h-2 gap-1 overflow-hidden rounded-full" aria-hidden>
@@ -150,6 +152,58 @@ export function Apps({ state, run }: PageProps) {
 
       <AppPicker open={pickerOpen} onOpenChange={setPickerOpen} existing={state.appRules} onAdd={(p) => run(() => api.saveAppRule(newRule(p, defaultAction)), () => `${p.name} added`)} run={run} />
     </>
+  )
+}
+
+/**
+ * Per-App leaves other apps alone only with ProxiFyre's driver; without it, it runs through the
+ * VPN adapter, and connecting or disconnecting can interrupt games and other apps.
+ */
+function DriverCard({ run }: { run: PageProps['run'] }) {
+  const [ready, setReady] = useState<boolean>()
+  const [installing, setInstalling] = useState(false)
+  useEffect(() => {
+    void api.perAppDriver().then(setReady, () => setReady(false))
+  }, [])
+  if (ready === undefined) return null
+  if (ready) {
+    return (
+      <Alert variant="primary">
+        <ShieldCheck />
+        <AlertTitle>{t('Per-App driver is installed')}</AlertTitle>
+        <AlertDescription>{t('Only the apps set to VPN are touched. Connecting, disconnecting or switching servers never interrupts other apps, such as games.')}</AlertDescription>
+      </Alert>
+    )
+  }
+  return (
+    <Alert variant="warning">
+      <TriangleAlert />
+      <AlertTitle>{t('Install the Per-App driver')}</AlertTitle>
+      <AlertDescription className="flex flex-col items-start gap-3">
+        <span>
+          {t('Without it, Per-App passes every app through the VPN adapter, so connecting or disconnecting can cut games and other apps that are not on the VPN. The driver (ProxiFyre with Windows Packet Filter) comes with Bridge, so nothing is downloaded; Windows asks for permission once.')}
+        </span>
+        <Button
+          size="sm"
+          disabled={installing}
+          onClick={() => {
+            setInstalling(true)
+            void run(
+              async () => {
+                const ok = await api.installPerAppDriver()
+                setReady(ok)
+                if (!ok) throw new Error(t('The driver is not installed. Try again, or see Logs.'))
+                return ok
+              },
+              () => t('Per-App driver installed. It is used from the next connection.')
+            ).finally(() => setInstalling(false))
+          }}
+        >
+          {installing ? <LoaderCircle className="animate-spin" /> : <Download />}
+          {installing ? t('Installing…') : t('Install driver')}
+        </Button>
+      </AlertDescription>
+    </Alert>
   )
 }
 

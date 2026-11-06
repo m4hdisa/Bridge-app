@@ -32,6 +32,22 @@ export async function relaunchAsAdmin(exe: string, args: string[]): Promise<void
   await powershell(`Start-Process -FilePath ${psQuote(exe)}${argList} -Verb RunAs`)
 }
 
+/**
+ * Ends copies of Bridge's own engines (sing-box, Xray, Aether, Psiphon) still running from an
+ * earlier run, e.g. one closed by an update or a crash while connected: Windows doesn't end child
+ * programs with their parent, and a sing-box left on in a TUN mode keeps every app's traffic going
+ * through it. Matched by exact path, so other copies of these programs are never touched. Returns
+ * how many it ended (it can't see elevated ones when Bridge itself isn't elevated).
+ */
+export async function stopLeftoverEngines(paths: string[]): Promise<number> {
+  const list = paths.map(psQuote).join(',')
+  const { stdout } = await powershell(
+    `$p = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and (@(${list}) -contains $_.Path) }); ` +
+      `$p | Stop-Process -Force -ErrorAction SilentlyContinue; $p.Count`
+  )
+  return Number(stdout.trim()) || 0
+}
+
 export function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer()

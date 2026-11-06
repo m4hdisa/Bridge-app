@@ -5,7 +5,8 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir, type NetworkInterfaceInfo } from 'node:os'
 import { join } from 'node:path'
 import { describeLink, extractLinks, parseLink } from '../src/main/parser'
-import { buildConfig, buildTestConfig } from '../src/main/config'
+import { buildConfig, buildTestConfig, serverTag } from '../src/main/config'
+import { appSlots, buildProxiFyreConfig, proxifyreAppName } from '../src/main/perapp'
 import { usageFromNames } from '../src/main/subscription'
 import { isNewer } from '../src/shared/version'
 import { handoffCandidates, isPublicIPv4 } from '../src/main/handoff'
@@ -168,6 +169,85 @@ check('IPv4-only TUN adapter', v4Only)
 const v4Tun = JSON.stringify((v4Only.inbounds as { type: string }[]).find((i) => i.type === 'tun'))
 if (v4Tun && !v4Tun.includes('fdfe') && !v4Tun.includes('::/1')) ok('no IPv6 address or route on the IPv4-only adapter')
 else fail('IPv4-only TUN adapter', `still has IPv6: ${v4Tun}`)
+
+console.log('\nSwitching servers without reconnecting')
+const withAlternates = buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, rulesDir, appRulesDir: join(dir, 'app-rules'), alternates: [profiles[0], ...profiles.slice(1, 4)] })
+check('config with a server selector', withAlternates)
+{
+  const outs = withAlternates.outbounds as { type: string; tag: string; outbounds?: string[]; default?: string }[]
+  const selector = outs.find((o) => o.tag === 'proxy')
+  const members = selector?.outbounds ?? []
+  if (selector?.type === 'selector' && members.length === 4 && selector.default === serverTag(profiles[0].id)) ok('"proxy" selects among 4 servers, the one in use first')
+  else fail('server selector', JSON.stringify(selector))
+  if (members.every((m) => outs.some((o) => o.tag === m))) ok('every selector member is an outbound')
+  else fail('selector members', members.join(', '))
+  const single = buildConfig({ server: profiles[0], settings, appRules: [], clashApi: { port: 19090, secret: 'x' }, appRulesDir: join(dir, 'app-rules'), alternates: [profiles[0]] })
+  if ((single.outbounds as { type: string; tag: string }[]).find((o) => o.tag === 'proxy')?.type !== 'selector') ok('no selector when there is nothing to switch to')
+  else fail('single server', 'still a selector')
+}
+
+console.log('\nPer-App through ProxiFyre (no TUN)')
+const redirectRules: AppRule[] = [
+  { id: 'a', name: 'Discord.exe', path: 'C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0.9187\\Discord.exe', action: 'proxy', enabled: true },
+  { id: 'b', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
+  { id: 'c', name: 'cs2.exe', path: 'D:\\Games\\cs2\\cs2.exe', action: 'direct', enabled: true },
+  { id: 'd', name: 'Spy.exe', path: 'C:\\Tools\\Spy.exe', action: 'block', enabled: true },
+  { id: 'e', name: 'Off.exe', path: 'C:\\Tools\\Off.exe', action: 'proxy', enabled: false }
+]
+const redirected = buildConfig({
+  server: profiles[0],
+  settings: { ...settings, mode: 'per-app' },
+  appRules: redirectRules,
+  clashApi: { port: 19090, secret: 'x' },
+  rulesDir,
+  appRulesDir: join(dir, 'app-rules'),
+  redirect: { ports: [19101, 19103], blockPort: 19102, user: 'u', password: 'p' },
+  dnsListen: { address: '127.0.0.1', port: 19153 }
+})
+check('Per-App config without TUN', redirected)
+{
+  const ins = redirected.inbounds as { type: string; tag: string }[]
+  if (!ins.some((i) => i.type === 'tun')) ok('no VPN adapter, so routes and other apps stay as they are')
+  else fail('redirect mode', 'still has a TUN inbound')
+  const rules = (redirected.route as { rules: Record<string, unknown>[] }).rules
+  const at = (pred: (r: Record<string, unknown>) => boolean) => rules.findIndex(pred)
+  const apps = at((r) => JSON.stringify(r.inbound) === '["apps-in-0","apps-in-1"]' && r.outbound === 'proxy')
+  const iran = at((r) => JSON.stringify(r.rule_set) === '["geosite-ir","geoip-ir"]')
+  if (apps > iran && iran >= 0) ok('apps handed over go through the VPN, Iranian sites still go direct')
+  else fail('apps-in rule order', JSON.stringify(rules))
+  if (rules.some((r) => JSON.stringify(r.inbound) === '["block-in"]' && r.action === 'reject')) ok('blocked apps are refused')
+  else fail('block-in', 'no reject rule')
+  if (rules.some((r) => JSON.stringify(r.inbound) === '["dns-in"]' && r.action === 'hijack-dns')) ok("Windows' DNS lookups are answered by Bridge")
+  else fail('dns-in', 'not hijacked')
+  if (!JSON.stringify(redirected.dns).includes('fakeip')) ok('real addresses only (no fake IPs left behind after disconnecting)')
+  else fail('redirect DNS', 'uses fake IPs')
+
+  const pf = buildProxiFyreConfig({ ports: [19101, 19103], blockPort: 19102, user: 'u', password: 'p', rules: redirectRules, exclude: ['C:\\Bridge\\Bridge.exe'] }) as {
+    proxies: { appNames: string[]; socks5ProxyEndpoint: string }[]
+    excludes: string[]
+  }
+  const [block, discord, telegram] = pf.proxies
+  if (block?.socks5ProxyEndpoint === '127.0.0.1:19102' && block.appNames.join() === 'C:\\Tools\\Spy.exe') ok('Block is the first rule, to the refusing port')
+  else fail('ProxiFyre block rule', JSON.stringify(pf.proxies))
+  if (pf.proxies.length === 3 && discord?.socks5ProxyEndpoint === '127.0.0.1:19101' && telegram?.socks5ProxyEndpoint === '127.0.0.1:19103' && telegram.appNames[0].endsWith('Telegram.exe'))
+    ok('each VPN app has its own inbound, so the traffic table can name it; Direct and disabled apps are not named at all')
+  else fail('ProxiFyre VPN rules', JSON.stringify(pf.proxies))
+  const shared = appSlots([...redirectRules, { id: 'f', name: 'x.exe', path: 'C:\\X\\x.exe', action: 'proxy', enabled: true }], 2)
+  if (shared.map((s) => s.slot).join() === '0,1,1') ok('apps beyond the inbounds share the last one')
+  else fail('appSlots overflow', JSON.stringify(shared))
+  if (pf.excludes.join() === 'C:\\Bridge\\Bridge.exe') ok("Bridge's own programs are excluded")
+  else fail('ProxiFyre excludes', pf.excludes.join())
+  const names: [string, string][] = [
+    ['C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0.9187\\Discord.exe', 'C:\\Users\\me\\AppData\\Local\\Discord\\app-'],
+    ['C:\\Program Files\\WindowsApps\\5319275A.WhatsAppDesktop_2.2442.6.0_x64__cv1g1gvanyjgm\\WhatsApp.exe', 'C:\\Program Files\\WindowsApps\\5319275A.WhatsAppDesktop_'],
+    ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe']
+  ]
+  for (const [path, want] of names) {
+    const got = proxifyreAppName(path)
+    if (got === want) ok(`app match survives updates: ${path.split('\\').pop()}`)
+    else fail(`proxifyreAppName(${path})`, got)
+  }
+}
 
 console.log('\nIPv6 detection (the VPN adapter only gets IPv6 if the network really has it)')
 const addr = (address: string) => ({ address, family: 'IPv6', internal: false }) as unknown as NetworkInterfaceInfo

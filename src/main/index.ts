@@ -6,9 +6,10 @@ import { DiscordPresence, type DiscordActivity } from './discord'
 import { fetcherVia, fetchTextVia, lookupExit } from './geo'
 import { describeLink, extractLinks, parseLink } from './parser'
 import { choosePublicCandidates, fetchPublicLinks, PUBLIC_KEEP, publicKey } from './publicconfigs'
+import { installPerAppDriver, perAppDriverReady, restoreDns, stopPerApp } from './perapp'
 import { Store } from './store'
 import { fetchSubscription, SubscriptionAnswer, type SubscriptionResult } from './subscription'
-import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin } from './system'
+import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin, stopLeftoverEngines } from './system'
 import { checkForUpdate, downloadInstaller, runInstaller } from './updater'
 import { isWarp, isWarpConfig, newWarpConfig, newWarpServer } from './warp'
 import { AUTO_SERVER, usesTun } from '../shared/types'
@@ -114,7 +115,8 @@ function discordActivity(): DiscordActivity | null {
  * the exit country Aether reported is used if every lookup fails.
  */
 async function findExit(port: number, startedAt: number): Promise<void> {
-  const current = () => core.status.state === 'running' && core.status.startedAt === startedAt
+  const serverId = core.status.serverId
+  const current = () => core.status.state === 'running' && core.status.startedAt === startedAt && core.status.serverId === serverId
   for (const wait of [1000, 4000, 10000, 30000]) {
     await new Promise((r) => setTimeout(r, wait))
     if (!current()) return
@@ -145,8 +147,10 @@ core.on('status', (s) => {
   updateTray()
   discord.update(discordActivity())
   watchHealth(s)
-  if (s.state === 'running' && s.startedAt && s.startedAt !== exitLookedUpFor && core.probePort) {
-    exitLookedUpFor = s.startedAt
+  // Once per connection, and again after switching servers without reconnecting.
+  const exitKey = s.switchedAt ?? s.startedAt
+  if (s.state === 'running' && s.startedAt && exitKey !== exitLookedUpFor && core.probePort) {
+    exitLookedUpFor = exitKey
     void findExit(core.probePort, s.startedAt)
   }
 })
@@ -460,7 +464,7 @@ function watchHealth(s: CoreStatus): void {
     store.update((st) => (st.selectedServerId = best.id))
     pushState()
     core.log(`Auto: switching to ${best.name} (${best.latency} ms)`)
-    await core.start(best, store.state.settings, store.state.appRules)
+    if (!(await core.switchServer(best).catch(() => false))) await core.start(best, store.state.settings, store.state.appRules, switchableServers(best.id))
   })()
     .catch((e) => core.log(`Auto: switching failed: ${e instanceof Error ? e.message : e}`, 'error'))
     .finally(() => {
@@ -546,7 +550,29 @@ async function connect(): Promise<void> {
   if (settings.autoServer) await pickBestServer()
   const server = store.state.servers.find((s) => s.id === store.state.selectedServerId)
   if (!server) throw new Error('Select a server first')
-  await core.start(server, settings, appRules)
+  await core.start(server, settings, appRules, switchableServers(server.id))
+}
+
+/** Most servers kept ready next to the one in use; each is one outbound in the config. */
+const MAX_ALTERNATES = 100
+
+/**
+ * Servers to keep ready in the running config, so picking one of them while connected switches
+ * at once (see Core.switchServer): only those sing-box runs itself, and only those that answered
+ * their last test, fastest first.
+ */
+function switchableServers(currentId: string): ServerProfile[] {
+  return store.state.servers
+    .filter((s) => s.id !== currentId && !isWarp(s) && s.engine !== 'xray' && !s.xrayOnly && (s.latency ?? -1) >= 0)
+    .sort((a, b) => a.latency! - b.latency!)
+    .slice(0, MAX_ALTERNATES)
+}
+
+/** Moves a running connection to the selected server: at once when it is ready, else by reconnecting. */
+async function moveToSelected(): Promise<void> {
+  const server = store.state.servers.find((s) => s.id === store.state.selectedServerId)
+  if (server && (await core.switchServer(server).catch(() => false))) return
+  await connect()
 }
 
 /** Restarts the core when the server or settings change while connected. */
@@ -618,8 +644,8 @@ handle('selectServer', async (id: string) => {
   pushState()
   if (core.status.state !== 'running') return
   if (auto) await pickBestServer()
-  // Reconnect only if the server actually changed.
-  if (store.state.selectedServerId !== before) await connect()
+  // Move only if the server actually changed.
+  if (store.state.selectedServerId !== before) await moveToSelected()
 })
 handle('setServerEngine', async (id: string, engine: Engine) => {
   const server = store.state.servers.find((s) => s.id === id)
@@ -740,7 +766,8 @@ handle('saveAppRule', async (rule: AppRule) => {
     } else s.appRules.push(rule)
   })
   pushState()
-  await core.updateAppRules(store.state.appRules, oldPath ? [oldPath, rule.path] : [rule.path])
+  // true: more apps on the VPN than the Per-App driver's inbounds, so reconnect to make more.
+  if (await core.updateAppRules(store.state.appRules, oldPath ? [oldPath, rule.path] : [rule.path])) await reconnectIfRunning()
 })
 handle('removeAppRule', async (id: string) => {
   const removed = store.state.appRules.find((r) => r.id === id)
@@ -783,6 +810,12 @@ handle('runSpeedTest', async () => {
 handle('stopSpeedTest', () => speedAbort?.abort())
 handle('findMtu', () => core.findMtu(store.state.servers.find((s) => s.id === (core.status.serverId ?? store.state.selectedServerId))))
 handle('isAdmin', () => isAdmin())
+handle('perAppDriver', () => perAppDriverReady())
+let installingDriver: Promise<boolean> | undefined
+handle('installPerAppDriver', () => {
+  installingDriver ??= installPerAppDriver(join(resourcesDir, 'proxifyre', 'install-driver.ps1'), (text, level) => core.log(text, level)).finally(() => (installingDriver = undefined))
+  return installingDriver
+})
 handle('relaunchAsAdmin', async () => {
   await core.stop()
   await relaunchAsAdmin(process.execPath, process.argv.slice(1))
@@ -851,9 +884,18 @@ function updateTray(): void {
 app.on('second-instance', showWindow)
 
 app.whenReady().then(async () => {
-  // If a previous run crashed while connected, undo what it left behind:
-  // the system proxy setting, and fake IPs in Windows' DNS cache.
+  // If a previous run crashed while connected, undo what it left behind: its engines (a sing-box
+  // left in a TUN mode would keep slowing every app), the system proxy setting, and fake IPs in
+  // Windows' DNS cache.
+  const engines = [join(resourcesDir, 'core', 'sing-box.exe'), join(resourcesDir, 'xray', 'xray.exe'), join(resourcesDir, 'aether', 'aether.exe'), join(resourcesDir, 'aether', 'pt', 'psiphon-tunnel-core.exe')]
+  const leftover = await stopLeftoverEngines(engines).catch(() => 0)
+  if (leftover) core.log(`Stopped ${leftover} engine program(s) a previous run of Bridge left running`, 'warn')
   await clearSystemProxy(store.state.settings.mixedPort).catch(() => undefined)
+  // and Per-App's driver and DNS rule (its watchdog normally undoes those; this needs admin rights).
+  if (await isAdmin()) {
+    await stopPerApp().catch(() => undefined)
+    if (await restoreDns().catch(() => false)) core.log('Removed the DNS rule a previous run left behind')
+  }
   await flushDns()
   createWindow()
   tray = new Tray(nativeImage.createFromPath(iconPath()).resize({ width: 16, height: 16 }))
