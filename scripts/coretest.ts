@@ -156,7 +156,35 @@ async function main() {
       await through(swapPort)
       await new Promise((r) => setTimeout(r, 500))
       check(seen(a) > a2 && seen(b) === before2, `reconnecting uses the server asked for, not the last one switched to (server 1: +${seen(a) - a2}, server 2: +${seen(b) - before2})`)
+      check(core.logs.some((l) => /^Connected in \d+\.\d s \(/.test(l.text)), 'the log says how long connecting took, step by step')
       await core.stop()
+
+      // A server only Xray runs is kept ready too, through one shared xray.exe.
+      const xp = port + 14
+      const xlog = join(dataDir, 'xray-server.log')
+      const xfile = join(dataDir, 'xray-server.json')
+      writeFileSync(xfile, JSON.stringify({
+        log: { loglevel: 'info', access: xlog },
+        inbounds: [{ listen: '127.0.0.1', port: xp, protocol: 'vless', settings: { clients: [{ id: uuid }], decryption: 'none' }, streamSettings: { network: 'xhttp', xhttpSettings: { path: '/x' } } }],
+        outbounds: [{ protocol: 'freedom' }]
+      }))
+      const xchild = spawn(join(root, 'resources', 'xray', 'xray.exe'), ['run', '-c', xfile], { windowsHide: true })
+      try {
+        await new Promise((r) => setTimeout(r, 1500))
+        const xs = parseLink(`vless://${uuid}@127.0.0.1:${xp}?encryption=none&security=none&type=xhttp&path=%2Fx#Local-XHTTP`)
+        check(xs.engine === 'xray', 'the xhttp server is run by Xray')
+        await core.start(a.profile, { ...DEFAULT_SETTINGS, mode: 'proxy-only', mixedPort: swapPort, logLevel: 'info' }, [], [xs])
+        const startedX = core.status.startedAt
+        check(core.canSwitchTo(xs.id), 'the Xray server is ready in the running config too')
+        check(await core.switchServer(xs), 'switched from a sing-box server to the Xray server')
+        await through(swapPort)
+        await new Promise((r) => setTimeout(r, 800))
+        const xseen = existsSync(xlog) ? (readFileSync(xlog, 'utf8').match(/example\.com/g)?.length ?? 0) : 0
+        check(xseen > 0 && core.status.startedAt === startedX, `the Xray server carries it, with no reconnect (${xseen} request(s))`)
+        await core.stop()
+      } finally {
+        xchild.kill()
+      }
     } finally {
       for (const s of servers) s.child.kill()
     }

@@ -249,6 +249,8 @@ export class Core extends EventEmitter {
 
   private child?: ChildProcess
   private xrayChild?: ChildProcess
+  /** The servers the running xray.exe carries. */
+  private xrayServers = new Set<string>()
   /** aether.exe processes: several while WARP methods race, one once connected. */
   private warpChildren = new Set<ChildProcess>()
   /**
@@ -355,23 +357,52 @@ export class Core extends EventEmitter {
     throw new Error('Xray did not become ready within 10 seconds')
   }
 
-  /**
-   * For servers run by Xray, starts xray.exe and returns the server as sing-box should see it:
-   * a SOCKS hop into Xray. Other servers are returned unchanged.
-   */
-  private async viaXray(server: ServerProfile, bindInterface?: string): Promise<ServerProfile> {
-    if (server.engine !== 'xray') return server
+  /** Resolves a server's address (pinAddress, or pinXray for a server Xray runs). */
+  private async pinServer(server: ServerProfile, quiet = false): Promise<ServerProfile> {
+    if (server.engine !== 'xray') return this.pinAddress(server, quiet)
     if (!server.xray) throw new Error('This server has no Xray settings; update its subscription or import it again')
-    const port = await freePort()
-    this.xrayChild = await this.launchXray([{ port, outbound: await this.pinXray(server.xray) }], 'xray-config', bindInterface)
+    return { ...server, xray: await this.pinXray(server.xray as XrayOutbound, quiet) }
+  }
+
+  /**
+   * Servers Xray runs (the one in use and the others kept ready) share one xray.exe, each on its
+   * own local SOCKS port, and sing-box sees each as a SOCKS hop into it; so switching to or from
+   * them needs no restart either. Takes servers already pinned (pinServer). If Xray can't start
+   * and only the others need it, they are left out instead of failing the connection.
+   */
+  private async viaXray(main: ServerProfile, alternates: ServerProfile[], bindInterface?: string): Promise<{ server: ServerProfile; alternates: ServerProfile[] }> {
+    let forXray = [main, ...alternates].filter((s) => s.engine === 'xray' && s.xray)
+    if (!forXray.length) return { server: main, alternates }
+    const essential = main.engine === 'xray'
+    if (essential) this.progress('Starting Xray')
+    const ports = new Map<string, number>()
+    for (const s of forXray) ports.set(s.id, await freePort())
+    const launch = (list: ServerProfile[]) =>
+      // The server in use comes first: launchXray waits for its port.
+      this.launchXray(list.map((s) => ({ port: ports.get(s.id)!, outbound: s.xray as XrayOutbound })), 'xray-config', bindInterface)
+    try {
+      this.xrayChild = await launch(forXray)
+    } catch (e) {
+      // One broken config among the others stops Xray altogether; the server in use still connects.
+      this.log(`Xray did not start with the other servers ready, so switching to those needs a reconnect: ${e instanceof Error ? e.message : e}`, 'warn')
+      if (!essential) return { server: main, alternates: alternates.filter((s) => s.engine !== 'xray') }
+      forXray = [main]
+      alternates = alternates.filter((s) => s.engine !== 'xray')
+      this.xrayChild = await launch(forXray)
+    }
+    this.xrayServers = new Set(forXray.map((s) => s.id))
     this.xrayChild.once('exit', (code) => {
       if (this.status.state !== 'running') return
       this.log(`Xray stopped unexpectedly (exit code ${code})`, 'error')
+      if (!this.xrayServers.has(this.status.serverId ?? '')) return
       void this.stop().then(() => this.setStatus({ state: 'stopped', error: 'Xray core stopped unexpectedly, see Logs' }))
     })
-    this.log(`Using Xray core for ${server.name} (local SOCKS ${port}${bindInterface ? `, bound to "${bindInterface}"` : ''})`)
-    if (needsRelay(server.xray)) this.log(`${server.name} has no TLS, REALITY or VLESS Encryption: the VPN hop itself is not encrypted`, 'warn')
-    return { ...server, outbound: socksOutbound(port) }
+    const others = forXray.length - (essential ? 1 : 0)
+    const what = essential ? `${main.name}${others ? ` and ${others} other server(s)` : ''}` : `${others} other server(s)`
+    this.log(`Using Xray core for ${what}${bindInterface ? `, bound to "${bindInterface}"` : ''}`)
+    if (essential && needsRelay(main.xray as XrayOutbound)) this.log(`${main.name} has no TLS, REALITY or VLESS Encryption: the VPN hop itself is not encrypted`, 'warn')
+    const hop = (s: ServerProfile): ServerProfile => (ports.has(s.id) ? { ...s, outbound: socksOutbound(ports.get(s.id)!) } : s)
+    return { server: hop(main), alternates: alternates.map(hop) }
   }
 
   /** Counts start() calls, so a slow start that was cancelled can't mistake a newer one for itself. */
@@ -1123,8 +1154,8 @@ export class Core extends EventEmitter {
 
   /**
    * `alternates` are other servers to keep ready in the same config, so switching to one of them
-   * later (switchServer) needs no restart. Only servers sing-box itself runs and that answered
-   * their last test belong here: one broken outbound would stop sing-box from starting at all.
+   * later (switchServer) needs no restart: every server but WARP, with the tested ones first (Xray
+   * ones through one shared xray.exe). If sing-box refuses one of them, it starts without them.
    */
   async start(server: ServerProfile, settings: Settings, appRules: AppRule[], alternates: ServerProfile[] = []): Promise<void> {
     if (this.scanningWarp) throw new Error('Bridge is still finding WARP configs; connect when it is done')
@@ -1134,13 +1165,26 @@ export class Core extends EventEmitter {
     this.settings = settings
     this.censoredDnsWarned = false
     const gen = ++this.startGen
+    // How long each step took, written to the log once connected.
+    const began = Date.now()
+    const steps: string[] = []
+    const timed = async <T>(name: string, p: Promise<T>): Promise<T> => {
+      const at = Date.now()
+      try {
+        return await p
+      } finally {
+        steps.push(`${name} ${((Date.now() - at) / 1000).toFixed(1)} s`)
+      }
+    }
     try {
       const api: ClashApi = { port: await freePort(), secret: randomUUID() }
       const probePort = await freePort()
       // Direct traffic must resolve with the real network's DNS; read it before TUN takes over.
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
-      const usesXray = server.engine === 'xray'
       const usesWarp = isWarp(server)
+      // Server names resolve while the network is read: neither waits for the other.
+      const pinning = Promise.all([usesWarp ? Promise.resolve(server) : this.pinServer(server), this.pinAlternates(alternates)])
+      pinning.catch(() => undefined)
       // Per-App hands only the chosen apps to Bridge through its driver when that is installed,
       // and falls back to the VPN adapter (which every app's traffic passes) when it isn't.
       const redirect = settings.mode === 'per-app' && !!this.paths.perApp && (await perAppDriverReady(this.paths.perApp))
@@ -1150,14 +1194,16 @@ export class Core extends EventEmitter {
       const tun = usesTun(settings.mode) && !redirect
       // Both need Bridge's own clean DNS: TUN answers every app's lookups, and so does Per-App (see pointDnsHere).
       const ownDns = tun || redirect
-      const net: Awaited<ReturnType<typeof networkInfo>> = ownDns ? await networkInfo() : { dnsServers: [], otherTunnels: [], defaultRoutes: [], bindPhysical: false }
+      const net: Awaited<ReturnType<typeof networkInfo>> = ownDns ? await timed('network', networkInfo()) : { dnsServers: [], otherTunnels: [], defaultRoutes: [], bindPhysical: false }
       if (tun && net.defaultRoutes.length) this.log(`Default routes before connecting: ${net.defaultRoutes.join(', ')}`)
-      const [localDns, pinned, ready] = await Promise.all([
-        ownDns ? pickDirectDns(net.dnsServers, log) : Promise.resolve(undefined),
-        // In TUN modes Xray goes straight out of the real adapter instead of looping through TUN.
-        usesWarp ? this.viaWarp(server, gen) : usesXray ? (this.progress('Starting Xray'), this.viaXray(server, tun ? net.interfaceAlias : undefined)) : this.pinAddress(server),
-        this.pinAlternates(alternates)
+      const [localDns, main, alternatesPinned] = await Promise.all([
+        ownDns ? timed('DNS check', pickDirectDns(net.dnsServers, log)) : Promise.resolve(undefined),
+        usesWarp ? timed('WARP', this.viaWarp(server, gen)) : pinning.then(([m]) => m),
+        timed('server addresses', pinning.then(([, a]) => a))
       ])
+      this.checkCancelled(gen)
+      // In TUN modes Xray goes straight out of the real adapter instead of looping through TUN.
+      const { server: pinned, alternates: ready } = await timed('Xray', this.viaXray(main, alternatesPinned, tun ? net.interfaceAlias : undefined))
       this.checkCancelled(gen)
       if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? `DNS-over-HTTPS ${localDns.working?.join(', ')}` : `DNS ${localDns.server}`}`)
       else if (ownDns) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
@@ -1206,33 +1252,46 @@ export class Core extends EventEmitter {
         const owners = await dnsPortOwners().catch(() => '')
         this.log(`Port 53 is in use by another program${owners ? ` (${owners})` : ''}, so apps on the VPN keep your normal DNS; blocked sites (such as Discord) may not open in them. Close that program or turn off its DNS, then reconnect.`, 'warn')
       } else if (dnsAddress && dnsAddress !== '127.0.0.1') this.log(`127.0.0.1:53 is taken, so Bridge answers Windows' DNS on ${dnsAddress}`)
-      const config = buildConfig({
-        noIpv6,
-        server: pinned,
-        settings,
-        appRules,
-        clashApi: api,
-        rulesDir: existsSync(join(this.paths.rulesDir, 'geosite-ir.srs')) ? this.paths.rulesDir : undefined,
-        cacheFile: join(this.paths.dataDir, 'cache.db'),
-        appRulesDir: this.appRulesDir,
-        localDns,
-        dnsRelayPort,
-        // xray.exe's traffic (a safety net; it is bound to the real adapter) and aether.exe's
-        // (which can't be bound on Windows, so it does reach TUN) must not loop back into the VPN.
-        bypassProcesses: usesXray && this.paths.xray ? [this.paths.xray] : usesWarp && this.paths.aether ? [this.paths.aether] : undefined,
-        defaultInterface,
-        otherInterface: tun ? net.otherInterface : undefined,
-        probePort,
-        alternates: ready,
-        redirect: redirectTo,
-        dnsListen
-      })
+      const configWith = (others: ServerProfile[]) =>
+        buildConfig({
+          noIpv6,
+          server: pinned,
+          settings,
+          appRules,
+          clashApi: api,
+          rulesDir: existsSync(join(this.paths.rulesDir, 'geosite-ir.srs')) ? this.paths.rulesDir : undefined,
+          cacheFile: join(this.paths.dataDir, 'cache.db'),
+          appRulesDir: this.appRulesDir,
+          localDns,
+          dnsRelayPort,
+          // xray.exe's traffic (a safety net; it is bound to the real adapter) and aether.exe's
+          // (which can't be bound on Windows, so it does reach TUN) must not loop back into the VPN.
+          bypassProcesses: this.xrayChild && this.paths.xray ? [this.paths.xray] : usesWarp && this.paths.aether ? [this.paths.aether] : undefined,
+          defaultInterface,
+          otherInterface: tun ? net.otherInterface : undefined,
+          probePort,
+          alternates: others,
+          redirect: redirectTo,
+          dnsListen
+        })
       const configFile = join(this.paths.dataDir, 'config.json')
-      writeFileSync(configFile, JSON.stringify(config, null, 2))
+      writeFileSync(configFile, JSON.stringify(configWith(ready), null, 2))
       this.log(`Starting sing-box: ${server.name} (${settings.mode})`)
       this.progress(tun ? 'Starting the VPN adapter' : 'Starting the VPN')
 
-      const child = await launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine)
+      // Every other server is kept ready, tested or not; if sing-box refuses one of them, it starts
+      // with this server alone, and switching to another then reconnects.
+      let kept = ready
+      let child: ChildProcess
+      try {
+        child = await timed('sing-box', launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine))
+      } catch (e) {
+        if (!ready.length || e instanceof Cancelled) throw e
+        this.log(`sing-box did not start with the other servers ready (${e instanceof Error ? e.message : e}); starting with this one only, so switching servers will reconnect`, 'warn')
+        kept = []
+        writeFileSync(configFile, JSON.stringify(configWith([]), null, 2))
+        child = await timed('sing-box again', launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine))
+      }
       // Disconnected while sing-box was starting: stop() couldn't see this process yet.
       if (this.status.state !== 'starting' || gen !== this.startGen) {
         await killProcess(child)
@@ -1243,12 +1302,12 @@ export class Core extends EventEmitter {
       this.api = api
       this.probePort = probePort
       this.tunUp = tun
-      this.selectable = new Set(ready.length ? [server.id, ...ready.map((s) => s.id)] : [])
-      if (ready.length) {
+      this.selectable = new Set(kept.length ? [server.id, ...kept.map((s) => s.id)] : [])
+      if (kept.length) {
         // sing-box puts the selector back on the server it was last switched to (it keeps that in its
         // cache file) instead of the one asked for: a user who picked Free WARP stayed on a public config.
         await clashPut(api, '/proxies/proxy', { name: serverTag(server.id) })
-        this.log(`${ready.length} more server(s) ready; switching to them needs no reconnect`)
+        this.log(`${kept.length} more server(s) ready; switching to them needs no reconnect`)
       }
       this.child.once('exit', (code) => this.onUnexpectedExit(code))
       // Apps opened before connecting may have Iran's fake answer (10.10.34.x) for blocked
@@ -1256,15 +1315,16 @@ export class Core extends EventEmitter {
       if (tun) await flushDns()
       if (redirectTo) {
         this.watchdog = startWatchdog(process.pid)
-        if (dnsListen) {
-          this.progress('Pointing Windows DNS at Bridge')
-          this.dnsPointed = true
-          await pointDnsHere(dnsListen.address, net.dnsServers).catch((e) => this.log(`Could not point Windows DNS at Bridge: ${e instanceof Error ? e.message : e}`, 'warn'))
-        }
+        // Pointing Windows' DNS at Bridge and starting the driver don't depend on each other.
+        if (dnsListen) this.dnsPointed = true
+        const pointing = dnsListen
+          ? timed('Windows DNS', pointDnsHere(dnsListen.address, net.dnsServers)).catch((e) => this.log(`Could not point Windows DNS at Bridge: ${e instanceof Error ? e.message : e}`, 'warn'))
+          : Promise.resolve()
         this.progress('Starting the Per-App driver')
         this.redirect = redirectTo
         this.slotPaths = appSlots(appRules, redirectTo.ports.length).map((a) => a.path)
-        this.perAppRun = await startPerApp(this.paths.perApp!, this.perAppConfig, redirectTo, log)
+        const [, run] = await Promise.all([pointing, timed('Per-App driver', startPerApp(this.paths.perApp!, this.perAppConfig, redirectTo, log))])
+        this.perAppRun = run
         this.checkCancelled(gen)
         this.log(`Per-App: ${appRules.filter((r) => r.enabled && r.action === 'proxy').length} app(s) go through the VPN; nothing else on this PC was changed`)
       }
@@ -1286,6 +1346,7 @@ export class Core extends EventEmitter {
         otherTunnels: net.otherTunnels.length ? net.otherTunnels : undefined,
         proxyPort: settings.mixedPort
       })
+      this.log(`Connected in ${((Date.now() - began) / 1000).toFixed(1)} s (${steps.join(', ')})`)
       void this.checkHealth()
       this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS)
       if (usesWarp && !server.warp?.shared) void this.replaceStarterAccount().catch((e) => this.log(`Free WARP: ${e instanceof Error ? e.message : e}`, 'warn'))
@@ -1467,8 +1528,9 @@ export class Core extends EventEmitter {
   private async pinAlternates(servers: ServerProfile[]): Promise<ServerProfile[]> {
     if (!servers.length) return []
     const deadline = new Promise<undefined>((r) => setTimeout(() => r(undefined), 4000))
-    const pinned = await Promise.all(servers.map((s) => Promise.race([this.pinAddress(s, true).catch(() => undefined), deadline])))
-    return pinned.filter((s): s is ServerProfile => !!s && typeof s.outbound.server === 'string' && isIP(s.outbound.server) !== 0)
+    const pinned = await Promise.all(servers.map((s) => Promise.race([this.pinServer(s, true).catch(() => undefined), deadline])))
+    const address = (s: ServerProfile) => (s.engine === 'xray' ? xrayServer(s.xray as XrayOutbound).host : s.outbound.server)
+    return pinned.filter((s): s is ServerProfile => !!s && typeof address(s) === 'string' && isIP(address(s) as string) !== 0)
   }
 
   /** Whether switchServer can move to this server without a restart. */
@@ -1546,6 +1608,7 @@ export class Core extends EventEmitter {
     }
     const xrayChild = this.xrayChild
     this.xrayChild = undefined
+    this.xrayServers.clear()
     await killProcess(xrayChild)
     const warpChildren = [...this.warpChildren]
     this.warpChildren.clear()

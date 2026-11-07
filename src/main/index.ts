@@ -564,9 +564,11 @@ const MAX_ALTERNATES = 100
  * their last test, fastest first.
  */
 function switchableServers(currentId: string): ServerProfile[] {
+  // The ones that answered their last test first (fastest first), then untested, then failed ones.
+  const rank = (s: ServerProfile) => (s.latency === undefined ? 1e7 : s.latency < 0 ? 2e7 : s.latency)
   return store.state.servers
-    .filter((s) => s.id !== currentId && !isWarp(s) && s.engine !== 'xray' && !s.xrayOnly && (s.latency ?? -1) >= 0)
-    .sort((a, b) => a.latency! - b.latency!)
+    .filter((s) => s.id !== currentId && !isWarp(s) && (s.engine !== 'xray' || !!s.xray))
+    .sort((a, b) => rank(a) - rank(b))
     .slice(0, MAX_ALTERNATES)
 }
 
