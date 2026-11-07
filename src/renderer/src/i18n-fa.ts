@@ -306,13 +306,9 @@ export const fa: Record<string, string> = {
   // Apps page
   'Decide, per app, where its traffic goes.': 'برای هر برنامه تعیین کنید ترافیکش از کجا برود.',
   'Browse .exe': 'انتخاب فایل exe',
-  'Per-App mode': 'حالت برنامه‌محور',
   'Full VPN mode': 'حالت VPN کامل',
   'System Proxy mode': 'حالت پروکسی سیستم',
   'Proxy only mode': 'حالت فقط پروکسی',
-  'Only apps set to VPN use the VPN. Apps not in this list are left on your normal internet.': 'فقط برنامه‌هایی که روی VPN هستند از VPN استفاده می‌کنند. برنامه‌هایی که در این فهرست نیستند روی اینترنت معمولی می‌مانند.',
-  'Per-App driver is installed': 'درایور برنامه‌محور نصب است',
-  'Only the apps set to VPN are touched. Connecting, disconnecting or switching servers never interrupts other apps, such as games.': 'فقط برنامه‌هایی که روی VPN هستند تغییر می‌کنند. وصل شدن، قطع شدن یا عوض کردن سرور هیچ‌وقت برنامه‌های دیگر، مثل بازی‌ها، را قطع نمی‌کند.',
   'Install the Per-App driver': 'درایور برنامه‌محور را نصب کنید',
   'Without it, Per-App passes every app through the VPN adapter, so connecting or disconnecting can cut games and other apps that are not on the VPN. The driver (Windows Packet Filter) comes with Bridge, so nothing is downloaded and no other app is installed; Windows asks for permission once.':
     'بدون آن، حالت برنامه‌محور همه‌ی برنامه‌ها را از آداپتور VPN رد می‌کند، برای همین وصل و قطع شدن ممکن است بازی‌ها و برنامه‌هایی را که روی VPN نیستند قطع کند. درایور (Windows Packet Filter) همراه Bridge است، پس چیزی دانلود نمی‌شود و برنامه‌ی دیگری نصب نمی‌شود؛ ویندوز یک بار اجازه می‌خواهد.',

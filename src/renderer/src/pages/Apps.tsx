@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppWindow, Ban, Download, FolderOpen, Globe, Info, LoaderCircle, Plus, Search, Shield, ShieldCheck, Split, Trash2, TriangleAlert, Waypoints } from 'lucide-react'
+import { AppWindow, Ban, Download, FolderOpen, Globe, Info, LoaderCircle, Plus, Search, Shield, Trash2, TriangleAlert, Waypoints } from 'lucide-react'
 import type { AppAction, AppRule, RunningProcess } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { cn } from '@/lib/utils'
@@ -30,8 +30,7 @@ const ACTIONS: { id: AppAction; label: string; icon: typeof Shield; tip: string;
   { id: 'block', label: 'Block', icon: Ban, tip: 'No network at all', on: 'data-[state=on]:bg-destructive data-[state=on]:text-white' }
 ]
 
-const MODE_HELP: Record<string, { title: string; text: string }> = {
-  'per-app': { title: 'Per-App mode', text: 'Only apps set to VPN use the VPN. Apps not in this list are left on your normal internet.' },
+const MODE_HELP: Record<string, { title: string; text: string } | undefined> = {
   tun: { title: 'Full VPN mode', text: 'Every app uses the VPN, except the ones set to Direct, Other VPN or Block here.' },
   'system-proxy': { title: 'System Proxy mode', text: 'Rules apply to apps that use the Windows proxy. Switch to Per-App on the Dashboard for full per-app control.' },
   'proxy-only': { title: 'Proxy only mode', text: 'Rules apply to apps you point at Bridge’s local proxy. Switch to Per-App for full per-app control.' }
@@ -81,11 +80,14 @@ export function Apps({ state, run }: PageProps) {
       />
 
       <div className="flex flex-col gap-4">
-        <Alert>
-          {mode === 'per-app' ? <Split /> : <Info />}
-          <AlertTitle>{t(help.title)}</AlertTitle>
-          <AlertDescription>{t(help.text)}</AlertDescription>
-        </Alert>
+        {/* Per-App needs no explaining here (the Dashboard does); other modes limit what the rules can do. */}
+        {help && (
+          <Alert>
+            <Info />
+            <AlertTitle>{t(help.title)}</AlertTitle>
+            <AlertDescription>{t(help.text)}</AlertDescription>
+          </Alert>
+        )}
 
         {mode === 'per-app' && <DriverCard run={run} />}
 
@@ -157,7 +159,7 @@ export function Apps({ state, run }: PageProps) {
 
 /**
  * Per-App leaves other apps alone only with Bridge's Per-App driver; without it, it runs through the
- * VPN adapter, and connecting or disconnecting can interrupt games and other apps.
+ * VPN adapter, and connecting or disconnecting can interrupt games and other apps. Shown only then.
  */
 function DriverCard({ run }: { run: PageProps['run'] }) {
   const [ready, setReady] = useState<boolean>()
@@ -165,16 +167,7 @@ function DriverCard({ run }: { run: PageProps['run'] }) {
   useEffect(() => {
     void api.perAppDriver().then(setReady, () => setReady(false))
   }, [])
-  if (ready === undefined) return null
-  if (ready) {
-    return (
-      <Alert variant="primary">
-        <ShieldCheck />
-        <AlertTitle>{t('Per-App driver is installed')}</AlertTitle>
-        <AlertDescription>{t('Only the apps set to VPN are touched. Connecting, disconnecting or switching servers never interrupts other apps, such as games.')}</AlertDescription>
-      </Alert>
-    )
-  }
+  if (ready !== false) return null
   return (
     <Alert variant="warning">
       <TriangleAlert />
