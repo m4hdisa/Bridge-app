@@ -6,7 +6,7 @@ import { tmpdir, type NetworkInterfaceInfo } from 'node:os'
 import { join } from 'node:path'
 import { describeLink, extractLinks, parseLink } from '../src/main/parser'
 import { buildConfig, buildTestConfig, serverTag } from '../src/main/config'
-import { appSlots, buildProxiFyreConfig, proxifyreAppName } from '../src/main/perapp'
+import { appSlots, buildPerAppConfig, perAppName } from '../src/main/perapp'
 import { usageFromNames } from '../src/main/subscription'
 import { isNewer } from '../src/shared/version'
 import { handoffCandidates, isPublicIPv4 } from '../src/main/handoff'
@@ -186,7 +186,7 @@ check('config with a server selector', withAlternates)
   else fail('single server', 'still a selector')
 }
 
-console.log('\nPer-App through ProxiFyre (no TUN)')
+console.log('\nPer-App through the driver (no TUN)')
 const redirectRules: AppRule[] = [
   { id: 'a', name: 'Discord.exe', path: 'C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0.9187\\Discord.exe', action: 'proxy', enabled: true },
   { id: 'b', name: 'Telegram.exe', path: 'C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe', action: 'proxy', enabled: true },
@@ -222,30 +222,34 @@ check('Per-App config without TUN', redirected)
   if (!JSON.stringify(redirected.dns).includes('fakeip')) ok('real addresses only (no fake IPs left behind after disconnecting)')
   else fail('redirect DNS', 'uses fake IPs')
 
-  const pf = buildProxiFyreConfig({ ports: [19101, 19103], blockPort: 19102, user: 'u', password: 'p', rules: redirectRules, exclude: ['C:\\Bridge\\Bridge.exe'] }) as {
-    proxies: { appNames: string[]; socks5ProxyEndpoint: string }[]
-    excludes: string[]
+  const pf = buildPerAppConfig({ ports: [19101, 19103], blockPort: 19102, user: 'u', password: 'p', rules: redirectRules, exclude: ['C:\\Bridge\\Bridge.exe'] }) as {
+    user: string
+    password: string
+    proxies: { apps: string[]; port: number }[]
+    exclude: string[]
   }
   const [block, discord, telegram] = pf.proxies
-  if (block?.socks5ProxyEndpoint === '127.0.0.1:19102' && block.appNames.join() === 'C:\\Tools\\Spy.exe') ok('Block is the first rule, to the refusing port')
-  else fail('ProxiFyre block rule', JSON.stringify(pf.proxies))
-  if (pf.proxies.length === 3 && discord?.socks5ProxyEndpoint === '127.0.0.1:19101' && telegram?.socks5ProxyEndpoint === '127.0.0.1:19103' && telegram.appNames[0].endsWith('Telegram.exe'))
+  if (block?.port === 19102 && block.apps.join() === 'C:\\Tools\\Spy.exe') ok('Block is the first rule, to the refusing port')
+  else fail('Per-App block rule', JSON.stringify(pf.proxies))
+  if (pf.proxies.length === 3 && discord?.port === 19101 && telegram?.port === 19103 && telegram.apps[0].endsWith('Telegram.exe'))
     ok('each VPN app has its own inbound, so the traffic table can name it; Direct and disabled apps are not named at all')
-  else fail('ProxiFyre VPN rules', JSON.stringify(pf.proxies))
+  else fail('Per-App VPN rules', JSON.stringify(pf.proxies))
+  if (pf.user === 'u' && pf.password === 'p') ok("bridge-perapp.exe gets the inbounds' password")
+  else fail('Per-App password', JSON.stringify(pf))
   const shared = appSlots([...redirectRules, { id: 'f', name: 'x.exe', path: 'C:\\X\\x.exe', action: 'proxy', enabled: true }], 2)
   if (shared.map((s) => s.slot).join() === '0,1,1') ok('apps beyond the inbounds share the last one')
   else fail('appSlots overflow', JSON.stringify(shared))
-  if (pf.excludes.join() === 'C:\\Bridge\\Bridge.exe') ok("Bridge's own programs are excluded")
-  else fail('ProxiFyre excludes', pf.excludes.join())
+  if (pf.exclude.join() === 'C:\\Bridge\\Bridge.exe') ok("Bridge's own programs are excluded")
+  else fail('Per-App excludes', pf.exclude.join())
   const names: [string, string][] = [
     ['C:\\Users\\me\\AppData\\Local\\Discord\\app-1.0.9187\\Discord.exe', 'C:\\Users\\me\\AppData\\Local\\Discord\\app-'],
     ['C:\\Program Files\\WindowsApps\\5319275A.WhatsAppDesktop_2.2442.6.0_x64__cv1g1gvanyjgm\\WhatsApp.exe', 'C:\\Program Files\\WindowsApps\\5319275A.WhatsAppDesktop_'],
     ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe']
   ]
   for (const [path, want] of names) {
-    const got = proxifyreAppName(path)
+    const got = perAppName(path)
     if (got === want) ok(`app match survives updates: ${path.split('\\').pop()}`)
-    else fail(`proxifyreAppName(${path})`, got)
+    else fail(`perAppName(${path})`, got)
   }
 }
 

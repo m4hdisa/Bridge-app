@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bridge Setup</title>
+<style>
+/* Bridge Setup's window, in the app's own theme (src/renderer/src/styles.css). The fonts are put in
+   by setup.go as data URLs, so nothing is loaded from anywhere. */
+@font-face { font-family: 'Geist'; src: url('{{GEIST}}') format('woff2'); font-weight: 100 900; }
+@font-face { font-family: 'Vazirmatn'; src: url('{{VAZIR_REGULAR}}') format('truetype'); font-weight: 400; }
+@font-face { font-family: 'Vazirmatn'; src: url('{{VAZIR_BOLD}}') format('truetype'); font-weight: 700; }
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --card: #131313;
+  --muted: #202020;
+  --muted-foreground: #a1a1a1;
+  --primary: #023ee8;
+  --primary-deep: #012ab8;
+  --brand: #649aff;
+  --success: #54c57a;
+  --destructive: #ed4a49;
+  --border: rgb(255 255 255 / 9%);
+  --input: rgb(255 255 255 / 13%);
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; overflow: clip; }
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font: 14px/1.45 'Geist', 'Vazirmatn', 'Segoe UI', sans-serif;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+html[lang='fa'] body { font-family: 'Vazirmatn', 'Geist', 'Segoe UI', sans-serif; letter-spacing: 0; }
+
+/* The title bar: dragging it moves the window. */
+.titlebar { position: fixed; inset: 0 0 auto 0; height: 44px; display: flex; align-items: center; padding-inline: 16px 6px; z-index: 5; }
+.titlebar .drag { flex: 1; align-self: stretch; }
+.titlebar .lang { font-size: 12px; color: var(--muted-foreground); background: none; border: 0; padding: 6px 10px; border-radius: 8px; font: inherit; font-size: 12px; cursor: pointer; }
+.titlebar .lang:hover { color: var(--foreground); background: rgb(255 255 255 / 5%); }
+.win { width: 40px; height: 32px; display: grid; place-items: center; border: 0; background: none; color: var(--muted-foreground); border-radius: 8px; cursor: pointer; }
+.win:hover { background: rgb(255 255 255 / 7%); color: var(--foreground); }
+.win.close:hover { background: #c42b1c; color: white; }
+.win svg { width: 15px; height: 15px; }
+
+/* A soft blue light behind the logo, like the connected button in the app. */
+.glow { position: fixed; inset: -150px 0 auto 0; height: 360px; pointer-events: none;
+  background: radial-gradient(260px 180px at 50% 50%, rgb(2 62 232 / 28%), transparent); }
+
+main { position: relative; height: 100%; display: flex; flex-direction: column; padding: 56px 28px 24px; }
+.hero { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.logo { width: 72px; height: 72px; filter: drop-shadow(0 10px 28px rgb(2 62 232 / 45%)); }
+h1 { margin-top: 18px; font-size: 26px; line-height: 1.15; font-weight: 700; letter-spacing: -0.03em; }
+html[lang='fa'] h1 { letter-spacing: 0; }
+.sub { margin-top: 6px; color: var(--muted-foreground); font-size: 13.5px; max-width: 34ch; }
+.badge { display: inline-flex; gap: 6px; align-items: center; margin-top: 12px; padding: 2px 10px; border-radius: 999px; font-size: 12px;
+  color: var(--muted-foreground); border: 1px solid var(--input); background: rgb(255 255 255 / 3%); font-variant-numeric: tabular-nums; }
+
+.card { margin-top: 24px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 6px; }
+.row { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; }
+.row + .row { border-top: 1px solid var(--border); border-radius: 0 0 12px 12px; }
+label.row { cursor: pointer; }
+label.row:hover { background: rgb(255 255 255 / 2.5%); }
+.row .icon { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--muted); color: var(--muted-foreground); }
+.row .icon svg { width: 17px; height: 17px; }
+.row .text { flex: 1; min-width: 0; }
+.row .title { font-weight: 600; font-size: 13.5px; }
+.row .hint { color: var(--muted-foreground); font-size: 12px; line-height: 1.4; margin-top: 1px; }
+.path { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 11.5px; direction: ltr; text-align: start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html[lang='fa'] .path { text-align: end; }
+.tag { font-size: 11px; color: var(--brand); border: 1px solid rgb(100 154 255 / 30%); background: rgb(100 154 255 / 10%); border-radius: 999px; padding: 0 7px; margin-inline-start: 6px; font-weight: 500; }
+
+/* Switches, like the app's. */
+.switch { position: relative; width: 38px; height: 22px; flex: none; }
+.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--muted); border: 1px solid var(--input); transition: background .2s, border-color .2s; }
+.switch span::after { content: ''; position: absolute; top: 2px; inset-inline-start: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted-foreground); transition: transform .2s, background .2s; }
+.switch input:checked + span { background: var(--primary); border-color: var(--primary); }
+.switch input:checked + span::after { background: white; transform: translateX(16px); }
+html[lang='fa'] .switch input:checked + span::after { transform: translateX(-16px); }
+.switch input:focus-visible + span { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.btn { font: inherit; font-weight: 600; font-size: 14px; border-radius: 10px; border: 0; height: 44px; padding: 0 18px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: transform .1s, filter .15s, background .15s; }
+.btn:active { transform: scale(.98); }
+.btn svg { width: 16px; height: 16px; }
+.primary { color: white; background: linear-gradient(180deg, #1c55f2 0%, var(--primary) 55%, var(--primary-deep) 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%), 0 10px 26px -10px rgb(2 62 232 / 80%); }
+.primary:hover { filter: brightness(1.08); }
+.ghost { color: var(--foreground); background: rgb(255 255 255 / 4%); border: 1px solid var(--input); }
+.ghost:hover { background: rgb(255 255 255 / 7%); }
+.small { height: 32px; font-size: 12.5px; padding: 0 12px; border-radius: 8px; }
+.actions { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.actions .btn { width: 100%; }
+.note { text-align: center; font-size: 11.5px; color: var(--muted-foreground); }
+
+/* Installing: a bar that fills, with light running through it. */
+.progress { margin-top: 36px; }
+.bar { height: 8px; border-radius: 999px; background: var(--muted); overflow: hidden; border: 1px solid var(--border); }
+.fill { position: relative; height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, var(--primary), var(--brand)); transition: width .4s ease; overflow: hidden; }
+.fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgb(255 255 255 / 45%), transparent); transform: translateX(-100%); animation: shine 1.4s infinite; }
+@keyframes shine { to { transform: translateX(100%); } }
+.step { display: flex; justify-content: space-between; margin-top: 12px; font-size: 13px; color: var(--muted-foreground); }
+.step b { color: var(--foreground); font-weight: 500; font-variant-numeric: tabular-nums; }
+.steps { margin-top: 28px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.steps li { list-style: none; display: flex; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: 13px; }
+.steps li .dot { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--input); display: grid; place-items: center; flex: none; }
+.steps li.active { color: var(--foreground); }
+.steps li.active .dot { border-color: var(--brand); }
+.steps li.active .dot::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); animation: pulse 1s infinite alternate; }
+.steps li.done .dot { border-color: var(--success); background: rgb(84 197 122 / 15%); color: var(--success); }
+.steps li.done .dot svg { width: 11px; height: 11px; }
+@keyframes pulse { from { opacity: .35 } to { opacity: 1 } }
+
+.done-mark { width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; background: rgb(84 197 122 / 12%); border: 1px solid rgb(84 197 122 / 35%); color: var(--success);
+  box-shadow: 0 0 40px rgb(84 197 122 / 25%); animation: pop .35s ease-out; }
+.done-mark svg { width: 34px; height: 34px; }
+.error-mark { background: rgb(237 74 73 / 12%); border-color: rgb(237 74 73 / 35%); color: var(--destructive); box-shadow: 0 0 40px rgb(237 74 73 / 20%); }
+@keyframes pop { from { transform: scale(.6); opacity: 0 } }
+.errtext { margin-top: 16px; font-size: 12px; color: var(--muted-foreground); background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
+  max-height: 120px; overflow: auto; direction: ltr; text-align: left; white-space: pre-wrap; user-select: text; }
+
+[hidden] { display: none !important; }
+.view { display: flex; flex-direction: column; flex: 1; animation: in .25s ease-out; }
+@keyframes in { from { opacity: 0; transform: translateY(6px) } }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="titlebar">
+  <div class="drag" id="drag"></div>
+  <button class="lang" id="lang"></button>
+  <button class="win" id="min" aria-label="Minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+  <button class="win close" id="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+</div>
+
+<main>
+  <!-- Choosing -->
+  <section class="view" id="choose">
+    <div class="hero">
+      <svg class="logo" viewBox="0 0 100 100" id="logo"></svg>
+      <h1 data-t="title"></h1>
+      <p class="sub" data-t="subtitle"></p>
+      <span class="badge" id="version"></span>
+    </div>
+    <div class="card">
+      <div class="row">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg></div>
+        <div class="text"><div class="title" data-t="where"></div><div class="hint path" id="path"></div></div>
+        <button class="btn ghost small" id="change" data-t="change"></button>
+      </div>
+      <label class="row" id="driverRow">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></svg></div>
+        <div class="text"><div class="title"><span data-t="driver"></span><span class="tag" data-t="recommended"></span></div><div class="hint" data-t="driverHint"></div></div>
+        <span class="switch"><input type="checkbox" id="driver" checked><span></span></span>
+      </label>
+      <label class="row">
+        <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg></div>
+        <div class="text"><div class="title" data-t="shortcut"></div></div>
+        <span class="switch"><input type="checkbox" id="shortcut" checked><span></span></span>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="install"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg><span id="installText"></span></button>
+      <p class="note" data-t="free"></p>
+    </div>
+  </section>
+
+  <!-- Installing -->
+  <section class="view" id="working" hidden>
+    <div class="hero">
+      <svg class="logo" viewBox="0 0 100 100" id="logo2"></svg>
+      <h1 data-t="installing"></h1>
+      <p class="sub" data-t="installingHint"></p>
+    </div>
+    <div class="progress">
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <div class="step"><span id="stepText"></span><b id="percent">0%</b></div>
+    </div>
+    <ul class="steps" id="steps"></ul>
+  </section>
+
+  <!-- Done or failed -->
+  <section class="view" id="finished" hidden>
+    <div class="hero">
+      <div class="done-mark" id="mark"></div>
+      <h1 id="doneTitle"></h1>
+      <p class="sub" id="doneText"></p>
+      <pre class="errtext" id="errText" hidden></pre>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="open"><span id="openText"></span></button>
+      <button class="btn ghost" id="done" data-t="close"></button>
+    </div>
+  </section>
+</main>
+
+<script>
+// Bridge Setup's window. setup.go binds window.setup* functions; opened in a browser (to look at the
+// design) a stand-in answers instead.
+const T = {
+  en: {
+    lang: 'فارسی', title: 'Install Bridge', update: 'Update Bridge', subtitle: 'Your servers, one tap away. Only the apps you choose go through the VPN.',
+    where: 'Install to', change: 'Change', driver: 'Per-App driver', recommended: 'Recommended',
+    driverHint: 'Games and other apps are never cut when you connect or disconnect. Windows asks for permission once.',
+    driverInstalled: 'Already installed', shortcut: 'Desktop shortcut', install: 'Install', updateTo: 'Update to', free: 'Free and open source · GPL-3.0',
+    installing: 'Installing Bridge', updating: 'Updating Bridge', installingHint: 'This takes a few seconds.',
+    sFiles: 'Copying Bridge', sDriver: 'Per-App driver (Windows asks for permission)', sShortcut: 'Shortcuts', sDone: 'Done',
+    doneTitle: 'Bridge is ready', doneText: 'Open it and press the button to connect.', updatedText: 'You have the new version; your servers and settings are kept.',
+    open: 'Open Bridge', close: 'Close', failTitle: 'Bridge could not be installed', retry: 'Try again',
+    driverSkipped: 'Bridge is installed. The Per-App driver was not: you can install it later from the Apps page.'
+  },
+  fa: {
+    lang: 'English', title: 'نصب Bridge', update: 'به‌روزرسانی Bridge', subtitle: 'سرورهای شما، یک لمس فاصله. فقط برنامه‌هایی که انتخاب می‌کنید از VPN می‌روند.',
+    where: 'محل نصب', change: 'تغییر', driver: 'درایور برنامه‌محور', recommended: 'پیشنهادی',
+    driverHint: 'بازی‌ها و برنامه‌های دیگر موقع وصل و قطع شدن قطع نمی‌شوند. ویندوز یک بار اجازه می‌خواهد.',
+    driverInstalled: 'از قبل نصب است', shortcut: 'میانبر روی دسکتاپ', install: 'نصب', updateTo: 'به‌روزرسانی به', free: 'رایگان و متن‌باز · GPL-3.0',
+    installing: 'در حال نصب Bridge', updating: 'در حال به‌روزرسانی Bridge', installingHint: 'چند ثانیه طول می‌کشد.',
+    sFiles: 'کپی Bridge', sDriver: 'درایور برنامه‌محور (ویندوز اجازه می‌خواهد)', sShortcut: 'میانبرها', sDone: 'تمام',
+    doneTitle: 'Bridge آماده است', doneText: 'بازش کنید و برای اتصال دکمه را بزنید.', updatedText: 'نسخه‌ی جدید نصب شد؛ سرورها و تنظیمات شما سر جایشان هستند.',
+    open: 'باز کردن Bridge', close: 'بستن', failTitle: 'Bridge نصب نشد', retry: 'دوباره امتحان کن',
+    driverSkipped: 'Bridge نصب شد، ولی درایور برنامه‌محور نه: بعداً از صفحه‌ی برنامه‌ها نصبش کنید.'
+  }
+}
+
+const $ = (id) => document.getElementById(id)
+let info = { version: '0.0.0', lang: 'en', dir: '', existing: '', driverInstalled: false }
+let lang = 'en'
+let result
+
+// The logo, from the same geometry as the app's (src/shared/logo.ts).
+function drawLogo(svg) {
+  const holes = [24, 50, 76].flatMap((x) => [[x, 29.5], [x, 55.9]])
+  const id = svg.id + '-cut'
+  svg.innerHTML =
+    `<defs><mask id="${id}"><rect x="24" y="29.5" width="52" height="26.4" fill="white"/><rect x="34.7" y="55.9" width="4.5" height="14.4" fill="white"/>` +
+    `<rect x="60.8" y="55.9" width="4.5" height="14.4" fill="white"/>${holes.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="10.7" fill="black"/>`).join('')}</mask></defs>` +
+    `<path d="M22 0H78Q100 0 100 22V78Q100 100 78 100H22Q0 100 0 78V22Q0 0 22 0Z" fill="#023ee8"/><rect width="100" height="100" fill="white" mask="url(#${id})"/>`
+}
+
+function render() {
+  const t = T[lang]
+  document.documentElement.lang = lang
+  document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr'
+  for (const el of document.querySelectorAll('[data-t]')) el.textContent = t[el.dataset.t]
+  $('lang').textContent = t.lang
+  const updating = !!info.existing
+  document.querySelector('#choose h1').textContent = updating ? t.update : t.title
+  $('version').textContent = updating ? `${info.existing} → ${info.version}` : `v${info.version}`
+  $('installText').textContent = updating ? `${t.updateTo} ${info.version}` : t.install
+  $('path').textContent = info.dir
+  $('change').hidden = updating
+  if (info.driverInstalled) {
+    $('driver').checked = true
+    $('driver').disabled = true
+    document.querySelector('#driverRow .hint').textContent = t.driverInstalled
+  }
+  $('working').querySelector('h1').textContent = updating ? t.updating : t.installing
+  if (result) showResult(result)
+}
+
+function steps(current) {
+  const t = T[lang]
+  const list = [['files', t.sFiles], ...($('driver').checked && !info.driverInstalled ? [['driver', t.sDriver]] : []), ['shortcut', t.sShortcut]]
+  const at = list.findIndex(([k]) => k === current)
+  $('steps').innerHTML = list
+    .map(([k, label], i) => {
+      const state = current === 'done' || i < at ? 'done' : i === at ? 'active' : ''
+      const tick = state === 'done' ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' : ''
+      return `<li class="${state}"><span class="dot">${tick}</span>${label}</li>`
+    })
+    .join('')
+  const text = list[at]?.[1] ?? t.sDone
+  $('stepText').textContent = text
+}
+
+// Called by setup.go as the work goes on.
+window.onProgress = (step, fraction) => {
+  steps(step)
+  const pct = Math.round(Math.max(0, Math.min(1, fraction)) * 100)
+  $('fill').style.width = pct + '%'
+  $('percent').textContent = pct + '%'
+}
+
+window.onFinished = (r) => {
+  result = r
+  showResult(r)
+}
+
+function showResult(r) {
+  const t = T[lang]
+  $('working').hidden = true
+  $('finished').hidden = false
+  const ok = r.ok
+  $('mark').className = 'done-mark' + (ok ? '' : ' error-mark')
+  $('mark').innerHTML = ok
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'
+  $('doneTitle').textContent = ok ? t.doneTitle : t.failTitle
+  $('doneText').textContent = ok ? (r.driverFailed ? t.driverSkipped : info.existing ? t.updatedText : t.doneText) : ''
+  $('errText').hidden = ok
+  $('errText').textContent = r.error || ''
+  $('openText').textContent = ok ? t.open : t.retry
+}
+
+$('lang').onclick = () => {
+  lang = lang === 'fa' ? 'en' : 'fa'
+  render()
+}
+$('drag').onmousedown = (e) => e.button === 0 && window.setupDrag?.()
+$('min').onclick = () => window.setupMinimize?.()
+$('close').onclick = () => window.setupClose?.()
+$('done').onclick = () => window.setupClose?.()
+$('change').onclick = async () => {
+  const dir = await window.setupChooseFolder(info.dir)
+  if (dir) {
+    info.dir = dir
+    render()
+  }
+}
+$('install').onclick = () => {
+  $('choose').hidden = true
+  $('working').hidden = false
+  result = undefined
+  window.onProgress('files', 0)
+  window.setupInstall({ dir: info.dir, driver: $('driver').checked && !info.driverInstalled, shortcut: $('shortcut').checked })
+}
+$('open').onclick = () => {
+  if (result?.ok) {
+    window.setupOpen()
+    return
+  }
+  $('finished').hidden = true
+  $('choose').hidden = false
+}
+
+// Opened in a browser: a stand-in for setup.go, so the design can be checked.
+if (!window.setupInfo) {
+  window.setupInfo = async () => ({ version: '0.6.2', lang: new URLSearchParams(location.search).get('lang') || 'en', dir: 'C:\\Users\\you\\AppData\\Local\\Programs\\Bridge', existing: new URLSearchParams(location.search).get('existing') || '', driverInstalled: false })
+  window.setupChooseFolder = async (d) => d
+  window.setupInstall = () => {
+    let f = 0
+    const timer = setInterval(() => {
+      f += 0.04
+      window.onProgress(f < 0.7 ? 'files' : f < 0.9 ? 'driver' : 'shortcut', f)
+      if (f >= 1) {
+        clearInterval(timer)
+        window.onFinished({ ok: new URLSearchParams(location.search).get('fail') ? false : true, error: 'msiexec exited with code 1603' })
+      }
+    }, 120)
+  }
+  window.setupOpen = () => {}
+}
+
+drawLogo($('logo'))
+drawLogo($('logo2'))
+window.setupInfo().then((i) => {
+  info = i
+  lang = i.lang === 'fa' ? 'fa' : 'en'
+  render()
+})
+</script>
+</body>
+</html>

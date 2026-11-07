@@ -127,7 +127,7 @@ export type ConnectionMode = 'system-proxy' | 'tun' | 'per-app' | 'proxy-only'
 
 /**
  * Modes that need administrator rights. Full VPN creates the TUN adapter; Per-App runs through
- * the ProxiFyre driver when it is installed, and through the TUN adapter when it isn't.
+ * Bridge's Per-App driver when it is installed, and through the TUN adapter when it isn't.
  */
 export function usesTun(mode: ConnectionMode): boolean {
   return mode === 'tun' || mode === 'per-app'
@@ -418,9 +418,9 @@ export interface BridgeApi {
 
   isAdmin(): Promise<boolean>
   relaunchAsAdmin(): Promise<void>
-  /** Whether ProxiFyre and its driver are installed, so Per-App leaves other apps alone. */
+  /** Whether the Per-App driver is installed, so Per-App leaves other apps alone. */
   perAppDriver(): Promise<boolean>
-  /** Downloads and runs ProxiFyre's official setup; resolves with perAppDriver() once it closes. */
+  /** Installs the Per-App driver that comes with Bridge; resolves with perAppDriver() once done. */
   installPerAppDriver(): Promise<boolean>
 
   onState(cb: (state: AppState) => void): () => void

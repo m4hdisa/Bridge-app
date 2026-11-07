@@ -1,37 +1,30 @@
-// Per-App without TUN, the way Proxifier works: ProxiFyre (github.com/wiresock/proxifyre,
-// AGPL-3.0) and its Windows Packet Filter driver hand only the chosen apps' connections to
-// Bridge's SOCKS inbound. Routes, adapters and every other app's connections stay as they are,
-// so connecting or disconnecting never drops a game that isn't on the VPN.
+// Per-App without TUN, the way Proxifier works: bridge-perapp.exe (Bridge's own, in native/perapp)
+// uses the Windows Packet Filter driver to hand only the chosen apps' connections to Bridge's SOCKS
+// inbounds. Routes, adapters and every other app's connections stay as they are, so connecting or
+// disconnecting never drops a game that isn't on the VPN.
 //
-// Bridge ships all of it (ProxiFyre, Windows Packet Filter, whose EULA allows including it in free
-// products, and the Visual C++ runtime) and installs it offline, from its installer or the Apps page.
+// Bridge ships the driver (Windows Packet Filter, whose EULA allows including it in free products)
+// and installs it offline, from its installer or the Apps page, out of Windows' list of installed
+// apps: it is part of Bridge, and Bridge's uninstaller removes it.
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { createSocket } from 'node:dgram'
 import { createServer, isIPv4 } from 'node:net'
-import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
 import type { AppRule } from '../shared/types'
 
 const exec = promisify(execFile)
 
-const SERVICE = 'ProxiFyreService'
 /** Windows Packet Filter's driver service. */
 const DRIVER = 'NDISRD'
-/** Marks the ProxiFyre config as Bridge's, so Bridge never stops a ProxiFyre someone else set up. */
-const MARKER = 'writtenBy'
+/** The firewall rule that lets bridge-perapp.exe take the connections it redirects (see install-driver.ps1). */
+const FIREWALL_RULE = 'Bridge Per-App'
 /** The comment on the DNS policy rule Bridge adds while connected (see pointDnsHere). */
 const NRPT_COMMENT = 'Bridge'
 
 type Log = (text: string, level?: 'info' | 'warn') => void
-
-export function proxifyreDir(): string {
-  return join(process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files', 'ProxiFyre')
-}
-
-function configPath(): string {
-  return join(proxifyreDir(), 'app-config.json')
-}
 
 function powershell(script: string): Promise<{ stdout: string }> {
   return exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true })
@@ -47,40 +40,27 @@ async function serviceState(name: string): Promise<string | undefined> {
   }
 }
 
-async function waitForState(name: string, want: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if ((await serviceState(name)) === want) return true
-    await new Promise((r) => setTimeout(r, 250))
-  }
-  return false
-}
-
-/** True once ProxiFyre and its driver are installed, so Per-App can run without TUN. */
-export async function perAppDriverReady(): Promise<boolean> {
-  if (!existsSync(join(proxifyreDir(), 'ProxiFyre.exe'))) return false
-  const [driver, service] = await Promise.all([serviceState(DRIVER), serviceState(SERVICE)])
-  return !!driver && !!service
+/** True once the driver is installed, so Per-App can run without TUN. */
+export async function perAppDriverReady(helper: string): Promise<boolean> {
+  return existsSync(helper) && !!(await serviceState(DRIVER))
 }
 
 /** What install-driver.ps1's exit codes mean. */
 const INSTALL_RESULTS: Record<number, string> = {
-  2: 'ProxiFyre needs .NET Framework 4.7.2 or later; install it from Windows Update',
-  3: 'The Per-App driver files that came with Bridge are damaged; reinstall Bridge',
-  4: 'Windows is missing the Universal C runtime; install Windows updates and try again',
+  3: 'The Per-App driver file that came with Bridge is damaged; reinstall Bridge',
   1602: 'The installation was cancelled',
   1603: 'Windows could not install the Per-App driver',
   1223: 'Windows permission was declined'
 }
 
 /**
- * Installs the driver from the files that come with Bridge (resources\proxifyre, see
+ * Installs the driver from the file that comes with Bridge (resources\perapp, see
  * scripts/install-driver.ps1), with no download, so it works where GitHub and Microsoft are
  * blocked. Windows asks for permission once; resolves with whether everything is in place.
  */
-export async function installPerAppDriver(script: string, log: Log): Promise<boolean> {
+export async function installPerAppDriver(script: string, helper: string, log: Log): Promise<boolean> {
   if (!existsSync(script)) throw new Error('The Per-App driver files are missing; reinstall Bridge')
-  log('Installing the Per-App driver (ProxiFyre with Windows Packet Filter); Windows asks for permission')
+  log('Installing the Per-App driver (Windows Packet Filter); Windows asks for permission')
   const quoted = script.replace(/'/g, "''")
   let code: number
   try {
@@ -103,18 +83,18 @@ export async function installPerAppDriver(script: string, log: Log): Promise<boo
   }
   if (code === 3010) log('Windows needs a restart to finish the Per-App driver; restart, then press Install driver again', 'warn')
   else if (code !== 0) log(`${INSTALL_RESULTS[code] ?? `The Per-App driver installation failed (code ${code})`}. Details: %TEMP%\\bridge-install-driver.log`, 'warn')
-  const ready = await perAppDriverReady()
+  const ready = await perAppDriverReady(helper)
   log(ready ? 'Per-App driver is installed' : 'Per-App driver is not installed', ready ? 'info' : 'warn')
   return ready
 }
 
 /**
- * How ProxiFyre should recognize an app. A name with a backslash matches anywhere in the
- * process's full path, so cutting the path before its first version number keeps the rule
- * working after the app updates itself into a new folder (Discord's "app-1.0.9187", Store apps'
- * "WhatsAppDesktop_2.2442.6.0_x64__...", Chrome's "120.0.6099.110").
+ * How an app is recognized: a name matches anywhere in the program's full path, so cutting the
+ * path before its first version number keeps the rule working after the app updates itself into a
+ * new folder (Discord's "app-1.0.9187", Store apps' "WhatsAppDesktop_2.2442.6.0_x64__...", Chrome's
+ * "120.0.6099.110").
  */
-export function proxifyreAppName(path: string): string {
+export function perAppName(path: string): string {
   const cut = path.lastIndexOf('\\')
   const dirs = path.slice(0, cut + 1)
   const version = dirs.search(/\d+(?:\.\d+)+/)
@@ -124,7 +104,7 @@ export function proxifyreAppName(path: string): string {
 export interface PerAppOptions {
   /**
    * Bridge's SOCKS inbounds for apps on the VPN, one per app (see appSlots), and the one that
-   * refuses everything (Block). sing-box only sees ProxiFyre as the program behind every
+   * refuses everything (Block). sing-box only sees bridge-perapp.exe as the program behind every
    * connection, so the inbound a connection arrives on is how Bridge knows which app it is.
    */
   ports: number[]
@@ -141,21 +121,21 @@ export interface AppSlot {
   slot: number
   /** The app's path as the user chose it, for the traffic table. */
   path: string
-  /** How ProxiFyre recognizes it (proxifyreAppName). */
+  /** How it is recognized (perAppName). */
   name: string
 }
 
 /**
- * Gives every app set to VPN its own inbound, in the order of the app list. Apps ProxiFyre would
- * recognize by the same name share the first one's. When there are more apps than inbounds, the
- * rest share the last inbound (Bridge reconnects with more inbounds; see Core.updateAppRules).
+ * Gives every app set to VPN its own inbound, in the order of the app list. Apps recognized by the
+ * same name share the first one's. When there are more apps than inbounds, the rest share the last
+ * inbound (Bridge reconnects with more inbounds; see Core.updateAppRules).
  */
 export function appSlots(rules: AppRule[], slots: number): AppSlot[] {
   const seen = new Set<string>()
   const out: AppSlot[] = []
   for (const r of rules) {
     if (!r.enabled || r.action !== 'proxy') continue
-    const name = proxifyreAppName(r.path)
+    const name = perAppName(r.path)
     if (seen.has(name.toLowerCase())) continue
     seen.add(name.toLowerCase())
     out.push({ slot: Math.min(out.length, slots - 1), path: r.path, name })
@@ -163,83 +143,113 @@ export function appSlots(rules: AppRule[], slots: number): AppSlot[] {
   return out
 }
 
-export function buildProxiFyreConfig(o: PerAppOptions): Record<string, unknown> {
-  const names = (action: AppRule['action']) => [...new Set(o.rules.filter((r) => r.enabled && r.action === action).map((r) => proxifyreAppName(r.path)))]
-  const rule = (appNames: string[], port: number) => ({
-    appNames,
-    socks5ProxyEndpoint: `127.0.0.1:${port}`,
-    username: o.user,
-    password: o.password,
-    socks5Transport: 'TCP',
-    supportedProtocols: ['TCP', 'UDP'],
-    supportedAddressFamilies: ['IPv4', 'IPv6']
-  })
+/** The rules bridge-perapp.exe reads (its Config in native/perapp/rules.go). */
+export function buildPerAppConfig(o: PerAppOptions): Record<string, unknown> {
+  const blocked = [...new Set(o.rules.filter((r) => r.enabled && r.action === 'block').map((r) => perAppName(r.path)))]
   // Block first, so an app that is both (an exe inside a VPN app's folder) stays blocked.
-  const vpn = appSlots(o.rules, o.ports.length).map((a) => rule([a.name], o.ports[a.slot]))
-  const proxies = [rule(names('block'), o.blockPort), ...vpn].filter((r) => r.appNames.length)
+  const proxies = [{ apps: blocked, port: o.blockPort }, ...appSlots(o.rules, o.ports.length).map((a) => ({ apps: [a.name], port: o.ports[a.slot] }))]
   return {
-    [MARKER]: 'Bridge',
-    logLevel: 'Warning',
-    bypassLan: true,
-    // ProxiFyre needs at least one rule; one that names no app never matches.
-    proxies: proxies.length ? proxies : [rule([], o.ports[0])],
+    user: o.user,
+    password: o.password,
     // Apps set to Direct or Other VPN need nothing: whatever no rule names keeps its own route.
-    excludes: [...new Set(o.exclude)]
+    proxies: proxies.filter((p) => p.apps.length),
+    exclude: [...new Set(o.exclude)]
   }
 }
 
-function isOurs(): boolean {
+/** Lets bridge-perapp.exe take redirected connections (Windows Firewall would refuse them). Needs administrator rights. */
+async function allowThroughFirewall(helper: string, log: Log): Promise<void> {
   try {
-    return JSON.parse(readFileSync(configPath(), 'utf8'))[MARKER] === 'Bridge'
+    const { stdout } = await exec('netsh.exe', ['advfirewall', 'firewall', 'show', 'rule', `name=${FIREWALL_RULE}`, 'verbose'], { windowsHide: true })
+    if (stdout.toLowerCase().includes(helper.toLowerCase())) return
   } catch {
-    return false
+    // No rule yet.
+  }
+  await exec('netsh.exe', ['advfirewall', 'firewall', 'delete', 'rule', `name=${FIREWALL_RULE}`], { windowsHide: true }).catch(() => undefined)
+  await exec('netsh.exe', ['advfirewall', 'firewall', 'add', 'rule', `name=${FIREWALL_RULE}`, 'dir=in', 'action=allow', `program=${helper}`, 'enable=yes', 'profile=any'], { windowsHide: true }).catch((e) =>
+    log(`Could not let the Per-App helper through Windows Firewall: ${e instanceof Error ? e.message : e}`, 'warn')
+  )
+}
+
+/** A running bridge-perapp.exe. */
+export interface PerAppRun {
+  stop(): Promise<void>
+}
+
+/**
+ * Starts redirecting the apps in the rules: bridge-perapp.exe, which stops by itself when Bridge
+ * exits, so a crash never leaves apps redirected. Needs administrator rights.
+ */
+export async function startPerApp(helper: string, configFile: string, o: PerAppOptions, log: Log): Promise<PerAppRun> {
+  await allowThroughFirewall(helper, log)
+  writeFileSync(configFile, JSON.stringify(buildPerAppConfig(o), null, 2))
+  const child = spawn(helper, ['-config', configFile, '-parent', String(process.pid)], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  const lines: string[] = []
+  const tail = () => (lines.length ? `:\n${lines.slice(-5).join('\n')}` : '')
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill()
+      reject(new Error(`The Per-App driver did not start in time${tail()}`))
+    }, 15000)
+    const onLine = (line: string) => {
+      if (line === 'ready') {
+        clearTimeout(timer)
+        resolve()
+        return
+      }
+      lines.push(line)
+      log(`[per-app] ${line}`, /fail|can't|couldn't|not installed|error/i.test(line) ? 'warn' : 'info')
+    }
+    createInterface({ input: child.stdout! }).on('line', onLine)
+    createInterface({ input: child.stderr! }).on('line', onLine)
+    child.once('error', (e) => {
+      clearTimeout(timer)
+      reject(e)
+    })
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      reject(new Error(`The Per-App driver stopped (code ${code})${tail()}`))
+    })
+  })
+  return {
+    stop: () =>
+      new Promise<void>((resolve) => {
+        if (child.exitCode !== null) return resolve()
+        const timer = setTimeout(() => {
+          child.kill()
+          resolve()
+        }, 3000)
+        child.once('exit', () => {
+          clearTimeout(timer)
+          resolve()
+        })
+        // Closing its input is how it is asked to stop; it puts the adapter back at once.
+        child.stdin?.end()
+      })
   }
 }
 
-/** The newest lines ProxiFyre logged, to show why it didn't start. */
-function logTail(): string {
+/**
+ * Removes the ProxiFyre that Bridge 0.6.0 and 0.6.1 installed (they used it before bridge-perapp.exe
+ * did its work); one someone set up with their own rules stays. Needs administrator rights.
+ */
+export async function removeOldProxiFyre(log: Log): Promise<void> {
+  const dir = join(process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files', 'ProxiFyre')
+  if (!existsSync(join(dir, 'ProxiFyre.exe'))) return
   try {
-    const dir = join(proxifyreDir(), 'logs')
-    const newest = readdirSync(dir)
-      .map((f) => ({ f, t: statSync(join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.t - a.t)[0]
-    if (!newest) return ''
-    return readFileSync(join(dir, newest.f), 'utf8').trim().split(/\r?\n/).slice(-5).join('\n')
+    if (JSON.parse(readFileSync(join(dir, 'app-config.json'), 'utf8')).writtenBy !== 'Bridge') return
   } catch {
-    return ''
+    // No rules at all: only Bridge's installer put it there.
+    if (existsSync(join(dir, 'app-config.json'))) return
   }
-}
-
-/** Writes Bridge's rules into ProxiFyre and (re)starts its service. Needs administrator rights. */
-export async function startPerApp(o: PerAppOptions, log: Log): Promise<void> {
-  const file = configPath()
-  // Someone's own ProxiFyre setup is kept aside, not overwritten.
-  if (existsSync(file) && !isOurs()) {
-    renameSync(file, `${file}.before-bridge`)
-    log(`Your own ProxiFyre settings were saved as ${file}.before-bridge`)
-  }
-  writeFileSync(file, JSON.stringify(buildProxiFyreConfig(o), null, 2))
-  // The service refuses a config owned by one user account rather than the Administrators group,
-  // which is what a new file gets when Windows is set to make the creator its owner.
-  await exec('icacls.exe', [file, '/setowner', '*S-1-5-32-544'], { windowsHide: true }).catch((e) => log(`Could not hand the ProxiFyre config to Administrators: ${e instanceof Error ? e.message : e}`, 'warn'))
-  if ((await serviceState(SERVICE)) !== 'STOPPED') await stopService()
-  await exec('sc.exe', ['start', SERVICE], { windowsHide: true }).catch(() => undefined)
-  if (!(await waitForState(SERVICE, 'RUNNING', 15000))) {
-    const tail = logTail()
-    throw new Error(`The Per-App driver (ProxiFyre) did not start${tail ? `:\n${tail}` : ''}`)
-  }
-}
-
-async function stopService(): Promise<void> {
-  await exec('sc.exe', ['stop', SERVICE], { windowsHide: true }).catch(() => undefined)
-  await waitForState(SERVICE, 'STOPPED', 15000)
-}
-
-/** Stops redirecting apps. Only touches ProxiFyre when it runs with Bridge's config. */
-export async function stopPerApp(): Promise<void> {
-  if (!isOurs()) return
-  const state = await serviceState(SERVICE)
-  if (state && state !== 'STOPPED') await stopService()
+  const state = await serviceState('ProxiFyreService')
+  if (state && state !== 'STOPPED') await exec('sc.exe', ['stop', 'ProxiFyreService'], { windowsHide: true }).catch(() => undefined)
+  const { stdout } = await powershell(
+    `$e = Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall' | ForEach-Object { Get-ItemProperty $_.PSPath } | ` +
+      `Where-Object { $_.DisplayName -like 'ProxiFyre*' } | Select-Object -First 1; ` +
+      `if ($e) { (Start-Process msiexec.exe -ArgumentList "/x $($e.PSChildName) /qn /norestart" -Wait -PassThru -WindowStyle Hidden).ExitCode }`
+  ).catch(() => ({ stdout: '' }))
+  if (stdout.trim()) log(`Removed ProxiFyre, which older versions of Bridge installed; Bridge does its work itself now (code ${stdout.trim()})`)
 }
 
 /**
@@ -295,15 +305,13 @@ export async function pointDnsHere(address: string, fallback: string[]): Promise
 }
 
 /**
- * A hidden PowerShell that waits for Bridge to exit and then undoes Per-App (stops ProxiFyre if it
- * runs Bridge's config, removes Bridge's DNS rule). A clean disconnect does that itself and ends
- * the watchdog; it only matters when Bridge crashes or is killed while connected.
+ * A hidden PowerShell that waits for Bridge to exit and then removes Bridge's DNS rule. A clean
+ * disconnect does that itself and ends the watchdog; it only matters when Bridge crashes or is
+ * killed while connected (bridge-perapp.exe stops by itself then).
  */
 export function startWatchdog(bridgePid: number): ChildProcess {
-  const config = configPath().replace(/'/g, "''")
   const script =
     `try { (Get-Process -Id ${bridgePid} -ErrorAction Stop).WaitForExit() } catch {}; ` +
-    `try { if ((Get-Content -Raw -LiteralPath '${config}' | ConvertFrom-Json).${MARKER} -eq 'Bridge') { Stop-Service ${SERVICE} -Force } } catch {}; ` +
     `$r = @(Get-DnsClientNrptRule | Where-Object Comment -eq '${NRPT_COMMENT}'); if ($r.Count) { $r | Remove-DnsClientNrptRule -Force; Clear-DnsClientCache }`
   const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
     windowsHide: true,

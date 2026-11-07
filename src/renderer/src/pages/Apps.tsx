@@ -156,7 +156,7 @@ export function Apps({ state, run }: PageProps) {
 }
 
 /**
- * Per-App leaves other apps alone only with ProxiFyre's driver; without it, it runs through the
+ * Per-App leaves other apps alone only with Bridge's Per-App driver; without it, it runs through the
  * VPN adapter, and connecting or disconnecting can interrupt games and other apps.
  */
 function DriverCard({ run }: { run: PageProps['run'] }) {
@@ -181,7 +181,7 @@ function DriverCard({ run }: { run: PageProps['run'] }) {
       <AlertTitle>{t('Install the Per-App driver')}</AlertTitle>
       <AlertDescription className="flex flex-col items-start gap-3">
         <span>
-          {t('Without it, Per-App passes every app through the VPN adapter, so connecting or disconnecting can cut games and other apps that are not on the VPN. The driver (ProxiFyre with Windows Packet Filter) comes with Bridge, so nothing is downloaded; Windows asks for permission once.')}
+          {t('Without it, Per-App passes every app through the VPN adapter, so connecting or disconnecting can cut games and other apps that are not on the VPN. The driver (Windows Packet Filter) comes with Bridge, so nothing is downloaded and no other app is installed; Windows asks for permission once.')}
         </span>
         <Button
           size="sm"

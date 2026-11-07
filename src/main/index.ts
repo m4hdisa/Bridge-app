@@ -6,7 +6,7 @@ import { DiscordPresence, type DiscordActivity } from './discord'
 import { fetcherVia, fetchTextVia, lookupExit } from './geo'
 import { describeLink, extractLinks, parseLink } from './parser'
 import { choosePublicCandidates, fetchPublicLinks, PUBLIC_KEEP, publicKey } from './publicconfigs'
-import { installPerAppDriver, perAppDriverReady, restoreDns, stopPerApp } from './perapp'
+import { installPerAppDriver, perAppDriverReady, removeOldProxiFyre, restoreDns } from './perapp'
 import { Store } from './store'
 import { fetchSubscription, SubscriptionAnswer, type SubscriptionResult } from './subscription'
 import { clearSystemProxy, flushDns, isAdmin, listProcesses, relaunchAsAdmin, stopLeftoverEngines } from './system'
@@ -20,11 +20,13 @@ if (!app.requestSingleInstanceLock()) app.quit()
 const resourcesDir = app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'resources')
 const dataDir = app.getPath('userData')
 const store = new Store(join(dataDir, 'state.json'))
+const perAppHelper = join(resourcesDir, 'perapp', 'bridge-perapp.exe')
 const core = new Core({
   singBox: join(resourcesDir, 'core', 'sing-box.exe'),
   xray: join(resourcesDir, 'xray', 'xray.exe'),
   aether: join(resourcesDir, 'aether', 'aether.exe'),
   psiphon: join(resourcesDir, 'aether', 'pt', 'psiphon-tunnel-core.exe'),
+  perApp: perAppHelper,
   rulesDir: join(resourcesDir, 'rules'),
   dataDir: join(dataDir, 'core')
 })
@@ -810,10 +812,10 @@ handle('runSpeedTest', async () => {
 handle('stopSpeedTest', () => speedAbort?.abort())
 handle('findMtu', () => core.findMtu(store.state.servers.find((s) => s.id === (core.status.serverId ?? store.state.selectedServerId))))
 handle('isAdmin', () => isAdmin())
-handle('perAppDriver', () => perAppDriverReady())
+handle('perAppDriver', () => perAppDriverReady(perAppHelper))
 let installingDriver: Promise<boolean> | undefined
 handle('installPerAppDriver', () => {
-  installingDriver ??= installPerAppDriver(join(resourcesDir, 'proxifyre', 'install-driver.ps1'), (text, level) => core.log(text, level)).finally(() => (installingDriver = undefined))
+  installingDriver ??= installPerAppDriver(join(resourcesDir, 'perapp', 'install-driver.ps1'), perAppHelper, (text, level) => core.log(text, level)).finally(() => (installingDriver = undefined))
   return installingDriver
 })
 handle('relaunchAsAdmin', async () => {
@@ -887,14 +889,15 @@ app.whenReady().then(async () => {
   // If a previous run crashed while connected, undo what it left behind: its engines (a sing-box
   // left in a TUN mode would keep slowing every app), the system proxy setting, and fake IPs in
   // Windows' DNS cache.
-  const engines = [join(resourcesDir, 'core', 'sing-box.exe'), join(resourcesDir, 'xray', 'xray.exe'), join(resourcesDir, 'aether', 'aether.exe'), join(resourcesDir, 'aether', 'pt', 'psiphon-tunnel-core.exe')]
+  const engines = [join(resourcesDir, 'core', 'sing-box.exe'), join(resourcesDir, 'xray', 'xray.exe'), join(resourcesDir, 'aether', 'aether.exe'), join(resourcesDir, 'aether', 'pt', 'psiphon-tunnel-core.exe'), perAppHelper]
   const leftover = await stopLeftoverEngines(engines).catch(() => 0)
   if (leftover) core.log(`Stopped ${leftover} engine program(s) a previous run of Bridge left running`, 'warn')
   await clearSystemProxy(store.state.settings.mixedPort).catch(() => undefined)
-  // and Per-App's driver and DNS rule (its watchdog normally undoes those; this needs admin rights).
+  // and Per-App's DNS rule (its watchdog normally removes it); this needs admin rights. The ProxiFyre
+  // older versions installed goes too, in the background.
   if (await isAdmin()) {
-    await stopPerApp().catch(() => undefined)
     if (await restoreDns().catch(() => false)) core.log('Removed the DNS rule a previous run left behind')
+    void removeOldProxiFyre((text, level) => core.log(text, level)).catch(() => undefined)
   }
   await flushDns()
   createWindow()

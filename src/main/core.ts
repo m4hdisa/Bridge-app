@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, serverTag, SPEED_TEST_PORTS, withServerIp, writeAppRuleSets, type ClashApi } from './config'
-import { appSlots, dnsPortOwners, freeDnsAddress, perAppDriverReady, pointDnsHere, restoreDns, startPerApp, startWatchdog, stopPerApp, type PerAppOptions } from './perapp'
+import { appSlots, dnsPortOwners, freeDnsAddress, perAppDriverReady, pointDnsHere, restoreDns, startPerApp, startWatchdog, type PerAppOptions, type PerAppRun } from './perapp'
 import { connect, isIP } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { DnsRelay } from './dnsrelay'
@@ -34,6 +34,8 @@ export interface CorePaths {
   psiphon?: string
   /** aether.exe, for the built-in free WARP server. */
   aether?: string
+  /** bridge-perapp.exe, which hands the chosen apps to Bridge in Per-App mode (see perapp.ts). */
+  perApp?: string
 }
 
 function socksOutbound(port: number): ServerProfile['outbound'] {
@@ -282,13 +284,15 @@ export class Core extends EventEmitter {
   private handoffIps = new Set<string>()
   /** True while the TUN adapter is up (Full VPN, or Per-App without its driver). */
   private tunUp = false
-  /** Per-App through ProxiFyre: its SOCKS details, while it runs (see perapp.ts). */
+  /** Per-App through the driver: its SOCKS details, while it runs (see perapp.ts). */
   private redirect?: Omit<PerAppOptions, 'rules'>
+  /** bridge-perapp.exe while it redirects. */
+  private perAppRun?: PerAppRun
   /** The app path behind each Per-App inbound (apps-in-N), for the traffic table. */
   private slotPaths: string[] = []
   /** Windows' DNS points at Bridge while this is set (see pointDnsHere). */
   private dnsPointed = false
-  /** Undoes Per-App if Bridge dies while connected (see startWatchdog). */
+  /** Removes Bridge's DNS rule if Bridge dies while connected (see startWatchdog). */
   private watchdog?: ChildProcess
   /** Servers in the running config's selector; switching between them needs no restart. */
   private selectable = new Set<string>()
@@ -1137,11 +1141,11 @@ export class Core extends EventEmitter {
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
       const usesXray = server.engine === 'xray'
       const usesWarp = isWarp(server)
-      // Per-App hands only the chosen apps to Bridge through ProxiFyre when its driver is installed,
+      // Per-App hands only the chosen apps to Bridge through its driver when that is installed,
       // and falls back to the VPN adapter (which every app's traffic passes) when it isn't.
-      const redirect = settings.mode === 'per-app' && (await perAppDriverReady())
+      const redirect = settings.mode === 'per-app' && !!this.paths.perApp && (await perAppDriverReady(this.paths.perApp))
       if (settings.mode === 'per-app' && !redirect) {
-        this.log('The Per-App driver (ProxiFyre) is not installed, so Per-App uses the VPN adapter; connecting and disconnecting can interrupt apps that are not on the VPN, such as games. Install it from the Apps page.', 'warn')
+        this.log('The Per-App driver is not installed, so Per-App uses the VPN adapter; connecting and disconnecting can interrupt apps that are not on the VPN, such as games. Install it from the Apps page.', 'warn')
       }
       const tun = usesTun(settings.mode) && !redirect
       // Both need Bridge's own clean DNS: TUN answers every app's lookups, and so does Per-App (see pointDnsHere).
@@ -1174,7 +1178,7 @@ export class Core extends EventEmitter {
       const defaultInterface = net.bindPhysical ? net.interfaceAlias : undefined
       if (net.otherTunnels.length) this.log(`Other tunnels are active: ${net.otherTunnels.join(', ')}. They may conflict with Bridge.`, 'warn')
       if (defaultInterface) this.log(`Bridge traffic is bound to "${defaultInterface}" to stay out of other tunnels`)
-      // With ProxiFyre, apps set to "Other VPN" are simply left alone, so they keep the other tool's route.
+      // With the Per-App driver, apps set to "Other VPN" are simply left alone, so they keep the other tool's route.
       if (tun && net.otherInterface) this.log(`Apps set to "Other VPN" go through "${net.otherInterface}"`)
       else if (tun && appRules.some((r) => r.enabled && r.action === 'other')) this.log('No other VPN adapter found; apps set to "Other VPN" go direct', 'warn')
       const noIpv6 = tun && !hasInternetIpv6(net.interfaceAlias)
@@ -1260,7 +1264,7 @@ export class Core extends EventEmitter {
         this.progress('Starting the Per-App driver')
         this.redirect = redirectTo
         this.slotPaths = appSlots(appRules, redirectTo.ports.length).map((a) => a.path)
-        await startPerApp(redirectTo, log)
+        this.perAppRun = await startPerApp(this.paths.perApp!, this.perAppConfig, redirectTo, log)
         this.checkCancelled(gen)
         this.log(`Per-App: ${appRules.filter((r) => r.enabled && r.action === 'proxy').length} app(s) go through the VPN; nothing else on this PC was changed`)
       }
@@ -1413,13 +1417,16 @@ export class Core extends EventEmitter {
    */
   async updateAppRules(rules: AppRule[], affectedPaths: string[]): Promise<boolean> {
     writeAppRuleSets(this.appRulesDir, rules)
-    // ProxiFyre reads its rules when it starts; restarting it only interrupts the apps it redirects.
+    // bridge-perapp.exe reads its rules when it starts; restarting it only interrupts the apps it redirects.
     if (this.redirect && this.status.state === 'running') {
       // More apps on the VPN than inbounds: the caller reconnects, which makes enough of them.
       if (appSlots(rules, Infinity).length > this.redirect.ports.length) return true
       const log = (text: string, level?: 'info' | 'warn') => this.log(text, level)
-      await startPerApp({ ...this.redirect, rules }, log).then(
-        () => {
+      await this.perAppRun?.stop()
+      this.perAppRun = undefined
+      await startPerApp(this.paths.perApp!, this.perAppConfig, { ...this.redirect, rules }, log).then(
+        (run) => {
+          this.perAppRun = run
           this.slotPaths = appSlots(rules, this.redirect?.ports.length ?? 1).map((a) => a.path)
           this.log('App list applied to the Per-App driver')
         },
@@ -1445,7 +1452,12 @@ export class Core extends EventEmitter {
 
   /** Bridge's own programs, which the Per-App driver must never hand back to Bridge. */
   private ownPrograms(): string[] {
-    return [process.execPath, this.paths.singBox, this.paths.xray, this.paths.aether, this.paths.psiphon].filter((p): p is string => !!p)
+    return [process.execPath, this.paths.singBox, this.paths.xray, this.paths.aether, this.paths.psiphon, this.paths.perApp].filter((p): p is string => !!p)
+  }
+
+  /** The rules bridge-perapp.exe reads. */
+  private get perAppConfig(): string {
+    return join(this.paths.dataDir, 'perapp.json')
   }
 
   /**
@@ -1517,7 +1529,9 @@ export class Core extends EventEmitter {
     if (this.redirect) {
       this.redirect = undefined
       this.slotPaths = []
-      await stopPerApp().catch((e) => this.log(`Could not stop the Per-App driver: ${e instanceof Error ? e.message : e}`, 'warn'))
+      const run = this.perAppRun
+      this.perAppRun = undefined
+      await run?.stop().catch((e) => this.log(`Could not stop the Per-App driver: ${e instanceof Error ? e.message : e}`, 'warn'))
     }
     if (this.dnsPointed) {
       this.dnsPointed = false
@@ -1577,7 +1591,7 @@ export class Core extends EventEmitter {
       const live = new Map<string, number>()
       const routes = new Map<string, Set<string>>()
       for (const c of snap.connections || []) {
-        // Through the Per-App driver the program is always ProxiFyre; the inbound says which app it is.
+        // Through the Per-App driver the program is always bridge-perapp.exe; the inbound says which app it is.
         const slot = c.metadata.type?.match(/\/apps-in-(\d+)$/)?.[1]
         const path = (slot !== undefined && this.slotPaths[Number(slot)]) || c.metadata.processPath || ''
         // Through the selector the chain ends in the server's own tag; it is still the VPN.
@@ -1586,8 +1600,8 @@ export class Core extends EventEmitter {
         const prev = this.seenConns.get(c.id) || { path, up: 0, down: 0 }
         let app = this.appTotals.get(path)
         if (!app) {
-          // With the Per-App driver, every app on the VPN reaches sing-box through ProxiFyre.
-          const name = !path ? 'Other / system' : this.redirect && /\\ProxiFyre\.exe$/i.test(path) ? 'Apps on VPN (Per-App driver)' : path.split('\\').pop()!
+          // With the Per-App driver, every app on the VPN reaches sing-box through bridge-perapp.exe.
+          const name = !path ? 'Other / system' : this.redirect && /\\bridge-perapp\.exe$/i.test(path) ? 'Apps on VPN (Per-App driver)' : path.split('\\').pop()!
           app = { path, name, upload: 0, download: 0, connections: 0 }
           this.appTotals.set(path, app)
         }

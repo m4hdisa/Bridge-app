@@ -5,7 +5,7 @@ resources/core/
 resources/xray/
 resources/aether/
 resources/rules/
-resources/proxifyre/
+resources/perapp/
 *.log
 *.tsbuildinfo
 

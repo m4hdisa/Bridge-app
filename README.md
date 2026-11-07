@@ -46,14 +46,16 @@ Per-App and Full VPN modes need administrator rights. Bridge offers a "Restart a
 
 ## Build from source
 
-Requires Node.js 22+ on Windows.
+Requires Node.js 22+ and Go 1.26+ on Windows (put `go` on PATH, or set `GO` to its `go.exe`).
 
 ```bash
 npm install
-npm run fetch-core   # downloads sing-box, Xray, Aether and the Iran rule-sets into resources/
+npm run fetch-core   # downloads sing-box, Xray, Aether, the Per-App driver and the Iran rule-sets into resources/, builds bridge-perapp.exe
 npm run dev          # run the app
-npm run dist         # build the installer into dist/
+npm run dist         # build the installers into dist/
 ```
+
+`npm run dist` makes two installers. `Bridge Setup <version>.exe` is the one people download: Bridge's own window (`native/setup`, on Windows' WebView2 through [go-webview2](https://github.com/jchv/go-webview2), MIT) with the second one inside it, which it runs silently. `Bridge-Update-<version>.exe` is electron-builder's installer, which `latest.yml` points at, so updates download it and install it as before; it also runs on its own pages on PCs without WebView2.
 
 `npm run dev:ui` runs the interface in a normal browser with a fake backend, so you can work on the UI without touching the network.
 
@@ -73,7 +75,7 @@ The installer bundles these programs. They are downloaded at build time and are 
 - [Aether](https://github.com/CluvexStudio/Aether) by CluvexStudio ([Telegram](https://t.me/CluvexStudio)), AGPL-3.0, for the free WARP server, with [Psiphon](https://github.com/Psiphon-Labs/psiphon-tunnel-core) (GPL-3.0) from the same Aether release for WARP + Psiphon. Bridge runs the official `aether.exe` and `psiphon-tunnel-core.exe` unmodified, as a separate program. Source: https://github.com/CluvexStudio/Aether
 - [Iran sing-box rule-sets](https://github.com/Chocolate4U/Iran-sing-box-rules) by Chocolate4U.
 
-For Per-App without the VPN adapter, the installer also includes, unmodified, and offers to install on its own page (the Apps page offers the same later), with no download: [ProxiFyre](https://github.com/wiresock/proxifyre) 2.6.4 (AGPL-3.0), the [Windows Packet Filter](https://www.ntkernel.com/windows-packet-filter/) driver 3.6.2.1 by NT KERNEL (freeware for non-commercial use; its EULA allows including it in free products and ships with it) and the Microsoft Visual C++ Redistributable 14.44.35211. They are downloaded at build time against pinned SHA-256 hashes; licenses and sources are in `resources/proxifyre`. Bridge then only writes ProxiFyre's config and starts or stops its service.
+For Per-App without the VPN adapter, Bridge has its own `bridge-perapp.exe` (source in `native/perapp`, built with Go 1.26 or newer by `scripts/fetch-core.mjs`), which hands only the chosen apps' connections to Bridge. It is built on [ndisapi-go](https://github.com/wiresock/ndisapi-go) (MIT), the Go library of the [Windows Packet Filter](https://www.ntkernel.com/windows-packet-filter/) driver, and its ProxiFyre example. The installer includes that driver, 3.6.2.1 by NT KERNEL (freeware for non-commercial use; its EULA allows including it in free products and ships with it), unmodified and checked against a pinned SHA-256 hash, and offers to install it on its own page (the Apps page offers the same later), with no download. It stays out of Windows' list of installed apps and goes when Bridge is uninstalled; no other program or service is added. Licenses are in `resources/perapp`.
 
 The app is built with [Electron](https://www.electronjs.org/), React, Tailwind CSS and [shadcn/ui](https://ui.shadcn.com/). Its fonts are [Geist and Geist Mono](https://github.com/vercel/geist-font) by Vercel, SIL Open Font License 1.1 (`src/renderer/src/assets/fonts/Geist-OFL.txt`). The sidebar icons are [Phosphor](https://phosphoricons.com/) (MIT); the rest are [Lucide](https://lucide.dev/) (ISC).
 

@@ -14,8 +14,8 @@ extraResources:
     to: aether
   - from: resources/rules
     to: rules
-  - from: resources/proxifyre
-    to: proxifyre
+  - from: resources/perapp
+    to: perapp
   - from: resources/icon.png
     to: icon.png
 win:
@@ -32,3 +32,6 @@ nsis:
   # The optional Per-App driver page (see build/installer.nsh).
   include: build/installer.nsh
   shortcutName: Bridge
+  # What updates download (latest.yml points here); people install with "Bridge Setup <version>.exe",
+  # Bridge's own window around this installer (scripts/build-setup.mjs).
+  artifactName: Bridge-Update-${version}.${ext}

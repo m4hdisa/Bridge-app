@@ -51,7 +51,7 @@ export interface BuildOptions {
    */
   alternates?: ServerProfile[]
   /**
-   * Per-App through ProxiFyre instead of TUN: the chosen apps reach sing-box through this SOCKS
+   * Per-App through the driver instead of TUN: the chosen apps reach sing-box through this SOCKS
    * inbound and apps set to Block through `blockPort`; nothing else on the system is touched.
    */
   redirect?: { ports: number[]; user: string; password: string; blockPort: number }
