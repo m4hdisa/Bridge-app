@@ -187,6 +187,43 @@ void (async () => {
   check(v3.ms < 500, `once the direct servers are known to be silent it goes straight through the VPN: ${Math.round(v3.ms)} ms`)
   vpnOnly.stop()
 
+  console.log('Direct servers that refuse at once (a reset connection)')
+  const [refused1, refused2, deadVpn] = await Promise.all([freePort(), freePort(), freePort()])
+  const refusing = [
+    { host: '127.0.0.1', port: refused1, servername: 'cloudflare-dns.com' },
+    { host: '127.0.0.1', port: refused2, servername: 'dns.google' }
+  ]
+  const refusedRelay = new DnsRelay({ servers: refusing, proxyPort: () => socksPort, vpnServer: cloudflare })
+  const r1 = await askRelay(await refusedRelay.start(), question(unique(210)))
+  check((r1.rcode === 0 || r1.rcode === 3) && r1.ms < 1400, `the VPN is asked at once instead of after 1.5 s: ${Math.round(r1.ms)} ms (rcode ${r1.rcode}${refusedRelay.lastError ? `, ${refusedRelay.lastError}` : ''})`)
+  refusedRelay.stop()
+
+  console.log('DNS-over-HTTPS did not answer directly before connecting (the check failed)')
+  const down = new DnsRelay({ servers: refusing, directDown: true, proxyPort: () => socksPort, vpnServer: cloudflare })
+  const d1 = await askRelay(await down.start(), question(unique(220)))
+  check((d1.rcode === 0 || d1.rcode === 3) && d1.ms < 1400, `the first question goes through the VPN right away: ${Math.round(d1.ms)} ms (rcode ${d1.rcode})`)
+  down.stop()
+
+  console.log("Neither the direct network nor the VPN answers: the network's own DNS")
+  const plainLast = new DnsRelay({ servers: refusing, directDown: true, proxyPort: () => deadVpn, vpnServer: cloudflare, plainDns: '8.8.8.8' })
+  const p1 = await askRelay(await plainLast.start(), question('www.example.com', 77))
+  check(p1.rcode === 0 && p1.id === 77 && p1.ips.length > 0, `answered by plain DNS in ${Math.round(p1.ms)} ms with the asker's ID (${p1.ips.join(', ')}${plainLast.lastError ? `; last problem ${plainLast.lastError}` : ''})`)
+  plainLast.stop()
+  // A plain DNS server that answers everything with Iran's block page.
+  const censor = createSocket('udp4')
+  censor.on('message', (q, from) => {
+    const answer = Buffer.concat([q, Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 10, 10, 34, 35])])
+    answer.writeUInt16BE(0x8180, 2)
+    answer.writeUInt16BE(1, 6)
+    censor.send(answer, from.port, from.address)
+  })
+  const censorPort = await new Promise<number>((resolve) => censor.bind(0, '127.0.0.1', () => resolve(censor.address().port)))
+  const censored = new DnsRelay({ servers: refusing, directDown: true, proxyPort: () => deadVpn, vpnServer: cloudflare, plainDns: `127.0.0.1:${censorPort}` })
+  const c1 = await askRelay(await censored.start(), question('discord.com', 78))
+  check(c1.rcode === 2 && !c1.ips.some((ip) => ip.startsWith('10.10.34.')), `the block page is not passed on (server failure, so the app asks again later; ${censored.lastError ?? ''})`)
+  censored.stop()
+  censor.close()
+
   console.log('Nothing answers at all')
   const none = new DnsRelay({ servers: [{ host: '127.0.0.1', port: dead1.port, servername: 'cloudflare-dns.com' }, { host: '127.0.0.1', port: dead2.port, servername: 'dns.google' }] })
   const nonePort = await none.start()

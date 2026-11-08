@@ -4,6 +4,7 @@
 // stalled connection held up every app, on or off the VPN, again and again. Here a question that
 // isn't answered within moments also goes to the next server, a stalled connection is thrown away
 // at once, and identical questions (Windows repeats them every second) are asked only once.
+import { createSocket } from 'node:dgram'
 import { connect as http2Connect, constants as h2, type ClientHttp2Session } from 'node:http2'
 import { createServer, type Server, type Socket } from 'node:net'
 import { connect as tlsConnect, type ConnectionOptions } from 'node:tls'
@@ -24,12 +25,25 @@ export interface DnsRelayOptions {
   proxyPort?: () => number | undefined
   /** Which server to ask through the VPN. Default: the first of `servers`. */
   vpnServer?: DohServer
+  /**
+   * The check before connecting found no DoH server answering directly. Questions then go through
+   * the VPN at once instead of waiting for `servers` first; they are still asked, in case they come back.
+   */
+  directDown?: boolean
+  /**
+   * The network's own DNS server (plain, port 53), the very last resort when neither the direct
+   * network nor the VPN answers. Iran's block page (10.10.34.x) from it is never passed on.
+   * An IPv4 address, with ":port" when it isn't 53 (tests).
+   */
+  plainDns?: string
   log?: (text: string, level?: 'info' | 'warn') => void
 }
 
 /** When each next server is asked, in ms after the question came in. */
 export const HEDGE_MS = [0, 300, 800]
 const VIA_VPN_MS = 1500
+/** How long after the VPN's turn the network's own DNS is asked. */
+const PLAIN_AFTER_VPN_MS = 2000
 /** A server that takes this long is on a dead connection, which gets replaced. */
 const ATTEMPT_MS = 2500
 const ANSWER_MS = 6000
@@ -89,7 +103,69 @@ interface Question {
   done: boolean
 }
 
-class DohClient {
+/** Iran's block page: what the network's DNS gives for blocked sites. */
+function isBlockPage(ip: string): boolean {
+  return ip.startsWith('10.10.34.')
+}
+
+interface Upstream {
+  readonly name: string
+  stalledUntil: number
+  ask(query: Buffer): Promise<Buffer>
+  reset(): void
+  close(): void
+}
+
+/** Plain DNS over UDP to the network's own server, one socket per question. */
+class PlainClient implements Upstream {
+  stalledUntil = 0
+
+  constructor(
+    readonly name: string,
+    private server: string,
+    private localAddress?: string
+  ) {}
+
+  ask(query: Buffer): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const socket = createSocket('udp4')
+      const id = Math.floor(Math.random() * 0x10000)
+      const wire = Buffer.from(query)
+      wire.writeUInt16BE(id, 0)
+      let settled = false
+      const done = (e: Error | undefined, answer?: Buffer) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        try {
+          socket.close()
+        } catch {
+          // Already closed after an error.
+        }
+        if (e) reject(e)
+        else resolve(answer!)
+      }
+      const timer = setTimeout(() => done(new Error('No answer')), ATTEMPT_MS)
+      socket.on('error', (e) => done(e))
+      socket.on('message', (msg) => {
+        if (msg.length < HEADER_BYTES || msg.readUInt16BE(0) !== id) return
+        if (msg[2] & 0x02) return done(new Error('Answer too long for plain DNS'))
+        if (answerAddresses(msg).some((a) => isBlockPage(a.ip))) return done(new Error('Censored answer (10.10.34.x)'))
+        const answer = Buffer.from(msg)
+        answer.writeUInt16BE(0, 0)
+        done(undefined, answer)
+      })
+      const [host, port] = this.server.split(':')
+      socket.bind({ port: 0, address: this.localAddress }, () => socket.send(wire, Number(port ?? 53), host))
+    })
+  }
+
+  reset(): void {}
+
+  close(): void {}
+}
+
+class DohClient implements Upstream {
   private session?: Promise<ClientHttp2Session>
   stalledUntil = 0
 
@@ -174,10 +250,11 @@ export class DnsRelay {
   private server?: Server
   private direct: DohClient[]
   private viaVpn?: DohClient
+  private plain?: PlainClient
   private questions = new Map<string, Question>()
   private sockets = new Set<Socket>()
   private watchdogs = new Set<NodeJS.Timeout>()
-  private stats = { answered: 0, backup: 0, viaVpn: 0, failed: 0, slowest: 0, replaced: 0 }
+  private stats = { answered: 0, backup: 0, viaVpn: 0, plain: 0, failed: 0, slowest: 0, replaced: 0 }
   /** Addresses Direct traffic timed out on, until when they are avoided. */
   private unreachable = new Map<string, number>()
   /** Addresses DNS has given out. */
@@ -201,6 +278,8 @@ export class DnsRelay {
         return tlsSession(`https://${last.servername ?? last.host}`, { socket: raw, host: last.host, servername: last.servername })
       })
     }
+    if (o.directDown) for (const c of this.direct) c.stalledUntil = Date.now() + PENALTY_MS
+    if (o.plainDns) this.plain = new PlainClient(`your network's DNS ${o.plainDns}`, o.plainDns, o.localAddress)
   }
 
   /** Starts listening on a free local port and returns it. */
@@ -225,7 +304,7 @@ export class DnsRelay {
     for (const q of this.questions.values()) for (const t of q.timers) clearTimeout(t)
     for (const t of this.watchdogs) clearTimeout(t)
     this.questions.clear()
-    for (const c of [...this.direct, this.viaVpn]) c?.close()
+    for (const c of [...this.direct, this.viaVpn, this.plain]) c?.close()
   }
 
   /** DNS over TCP: each message starts with its 2-byte length. */
@@ -265,11 +344,13 @@ export class DnsRelay {
     // Healthy servers first, in the order given; the sort is stable.
     const line = [...this.direct].sort((a, b) => Number(a.stalledUntil > now) - Number(b.stalledUntil > now))
     let failures = 0
-    const attempts = Math.min(line.length, HEDGE_MS.length) + (this.viaVpn ? 1 : 0)
-    const asked = new Set<DohClient>()
+    const vpn = this.viaVpn
+    const plain = this.plain
+    const attempts = Math.min(line.length, HEDGE_MS.length) + (vpn ? 1 : 0) + (plain ? 1 : 0)
+    const asked = new Set<Upstream>()
     let pending = 0
-    let held: { answer: Buffer; client: DohClient } | undefined
-    const finish =(answer: Buffer | undefined, client?: DohClient) => {
+    let held: { answer: Buffer; client: Upstream } | undefined
+    const finish = (answer: Buffer | undefined, client?: Upstream) => {
       if (question.done) return
       question.done = true
       this.questions.delete(key)
@@ -279,12 +360,14 @@ export class DnsRelay {
       if (!answer) this.stats.failed++
       else {
         this.stats.answered++
-        if (client === this.viaVpn) this.stats.viaVpn++
+        if (client === vpn) this.stats.viaVpn++
+        else if (client === plain) this.stats.plain++
         else if (client !== line[0]) this.stats.backup++
       }
       for (const w of question.waiters) this.reply(w, answer, wire)
     }
-    const ask = (client: DohClient) => {
+    const ask = (client: Upstream) => {
+      if (question.done || asked.has(client)) return
       this.upstreamAsked++
       // Keeps running after another server answered: that's how a stalled connection gets noticed
       // when the backups are hiding it. The next question must not wait on it too.
@@ -319,21 +402,26 @@ export class DnsRelay {
           settled()
           pending--
           this.lastError = `${client.name}: ${e instanceof Error ? e.message : e}`
-          if (held && !pending) finish(held.answer, held.client)
-          else if (++failures >= attempts) finish(undefined)
+          // A direct server that refuses at once (a reset connection) goes to the back of the line
+          // too, not only one that stalls.
+          if (client !== vpn && client !== plain) client.stalledUntil = Date.now() + PENALTY_MS
+          if (held && !pending) return finish(held.answer, held.client)
+          if (++failures >= attempts) return finish(undefined)
+          // The whole direct network refuses: no reason to wait for the VPN's turn.
+          if (vpn && !asked.has(vpn) && line.every((c) => c.stalledUntil > Date.now())) ask(vpn)
+          // Everything asked so far failed: the network's own DNS is the last resort.
+          else if (plain && vpn && asked.has(vpn) && !pending) ask(plain)
         }
       )
     }
     line.slice(0, HEDGE_MS.length).forEach((client, i) => {
       if (HEDGE_MS[i] === 0) ask(client)
-      else question.timers.push(setTimeout(() => !question.done && !asked.has(client) && ask(client), HEDGE_MS[i]))
+      else question.timers.push(setTimeout(() => ask(client), HEDGE_MS[i]))
     })
-    if (this.viaVpn) {
-      const vpn = this.viaVpn
-      // With the whole direct network silent, there's no reason to wait for it first.
-      const directSilent = line.every((c) => c.stalledUntil > now)
-      question.timers.push(setTimeout(() => !question.done && ask(vpn), directSilent ? 0 : VIA_VPN_MS))
-    }
+    // With the whole direct network silent, there's no reason to wait for it first.
+    const vpnAt = vpn ? (line.every((c) => c.stalledUntil > now) ? 0 : VIA_VPN_MS) : HEDGE_MS[HEDGE_MS.length - 1]
+    if (vpn) question.timers.push(setTimeout(() => ask(vpn), vpnAt))
+    if (plain) question.timers.push(setTimeout(() => ask(plain), vpnAt + PLAIN_AFTER_VPN_MS))
     question.timers.push(setTimeout(() => finish(undefined), ANSWER_MS))
   }
 
@@ -393,9 +481,9 @@ export class DnsRelay {
   /** One line a minute, only when lookups had trouble, so the logs say what the network is doing. */
   private report(): void {
     const s = this.stats
-    this.stats = { answered: 0, backup: 0, viaVpn: 0, failed: 0, slowest: 0, replaced: 0 }
-    if (!s.backup && !s.viaVpn && !s.failed && !s.replaced) return
-    this.o.log?.(`DNS: in the last minute ${s.answered} answered, ${s.backup} by a backup server, ${s.viaVpn} through the VPN because the direct network didn't answer, ${s.failed} not answered, ${s.replaced} addresses that time out replaced; slowest ${Math.round(s.slowest)} ms${this.lastError ? ` (last problem: ${this.lastError})` : ''}`, s.failed || s.viaVpn ? 'warn' : 'info')
+    this.stats = { answered: 0, backup: 0, viaVpn: 0, plain: 0, failed: 0, slowest: 0, replaced: 0 }
+    if (!s.backup && !s.viaVpn && !s.plain && !s.failed && !s.replaced) return
+    this.o.log?.(`DNS: in the last minute ${s.answered} answered, ${s.backup} by a backup server, ${s.viaVpn} through the VPN because the direct network didn't answer, ${s.plain ? `${s.plain} by your network's own DNS because the VPN didn't answer either, ` : ''}${s.failed} not answered, ${s.replaced} addresses that time out replaced; slowest ${Math.round(s.slowest)} ms${this.lastError ? ` (last problem: ${this.lastError})` : ''}`, s.failed || s.viaVpn ? 'warn' : 'info')
     this.lastError = undefined
   }
 }

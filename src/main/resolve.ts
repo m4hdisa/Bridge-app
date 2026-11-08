@@ -85,7 +85,7 @@ export interface DirectDns {
 }
 
 /** Public DoH resolvers reachable by IP (their certificates cover the IP), in order of preference. */
-const DOH_SERVERS = ['1.1.1.1', '8.8.8.8', '9.9.9.9', '1.0.0.1', '8.8.4.4', '149.112.112.112']
+export const DOH_SERVERS = ['1.1.1.1', '8.8.8.8', '9.9.9.9', '1.0.0.1', '8.8.4.4', '149.112.112.112']
 
 /**
  * Chooses how Direct apps' domains are resolved while TUN is on.
@@ -100,7 +100,7 @@ export async function pickDirectDns(networkServers: string[], log: (text: string
   const working = DOH_SERVERS.filter((_, i) => doh[i])
   if (working.length) return { type: 'https', server: working[0], working }
 
-  log('No DNS-over-HTTPS server answered; falling back to plain DNS, Direct apps may not resolve names', 'warn')
+  log('No DNS-over-HTTPS server answered directly; looking for plain DNS as a last resort', 'warn')
   const usable = networkServers.filter((s) => !s.startsWith('127.') && !s.startsWith('0.'))
   for (const s of networkServers.filter((s) => !usable.includes(s))) log(`Network DNS ${s} is a local address (probably another VPN tool), not using it`, 'warn')
   const candidates = [...new Set([...usable, '1.1.1.1', '8.8.8.8'])]

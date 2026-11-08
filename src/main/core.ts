@@ -9,7 +9,7 @@ import { appSlots, dnsPortOwners, freeDnsAddress, perAppDriverReady, pointDnsHer
 import { connect, isIP } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { DnsRelay } from './dnsrelay'
-import { pickDirectDns, ServerResolver } from './resolve'
+import { DOH_SERVERS, pickDirectDns, ServerResolver } from './resolve'
 import { buildXrayConfig, needsRelay, xrayServer, xrayWithServerIp, type XrayOutbound } from './xray'
 import { GOOL_RETRY_MS, isWarp, parseWarpLine, parseWarpShareLink, WARP_SHARE_SCHEME, WARP_STARTER_LIST, WARP_STARTER_MARK, prefersForeignExit, WARP_EXIT_REFUSED, WARP_FIND_METHODS, WARP_IDENTITY_FILE, WARP_MAX_EXIT_REFUSED, WARP_NO_IPV6, WARP_REGISTER_TRIES, WARP_STATE_FILE, waitForGool, waitForH3, warpArgs, warpExitCountry, warpGateway, warpLabel, warpMethods, warpReady, type PsiphonChain, warpRegisterArgs, warpShareLink, type WarpState } from './warp'
 import { clearSystemProxy, flushDns, freePort, hasInternetIpv6, networkInfo, setHostRoutes, setSystemProxy } from './system'
@@ -1205,12 +1205,20 @@ export class Core extends EventEmitter {
       // In TUN modes Xray goes straight out of the real adapter instead of looping through TUN.
       const { server: pinned, alternates: ready } = await timed('Xray', this.viaXray(main, alternatesPinned, tun ? net.interfaceAlias : undefined))
       this.checkCancelled(gen)
-      if (localDns) this.log(`Direct apps resolve names with ${localDns.type === 'https' ? `DNS-over-HTTPS ${localDns.working?.join(', ')}` : `DNS ${localDns.server}`}`)
-      else if (ownDns) this.log('No working DNS server found for direct apps; using the system resolver', 'warn')
-      if (localDns?.working?.length) {
+      const dohDirect = localDns?.type === 'https' ? (localDns.working ?? [localDns.server]) : []
+      if (dohDirect.length) this.log(`Direct apps resolve names with DNS-over-HTTPS ${dohDirect.join(', ')}`)
+      else if (ownDns) {
+        // The check before connecting is one try of a few seconds, and on some networks in Iran it
+        // fails now and then. The network's own DNS would then answer blocked sites (Discord) with
+        // the block page, so Bridge's clean DNS asks through the VPN instead.
+        this.log(`DNS-over-HTTPS did not answer directly on this network, so Bridge's DNS asks it through the VPN${localDns ? ` (your network's DNS ${localDns.server} only as a last resort)` : ''}`, 'warn')
+      }
+      if (ownDns) {
         // Answers every app's lookups, so one stalled connection can't hold them all up (see dnsrelay.ts).
         this.dnsRelay = new DnsRelay({
-          servers: localDns.working.map((host) => ({ host })),
+          servers: (dohDirect.length ? dohDirect : DOH_SERVERS).map((host) => ({ host })),
+          directDown: !dohDirect.length,
+          plainDns: localDns?.type === 'udp' ? localDns.server : undefined,
           localAddress: adapterIpv4(net.interfaceAlias),
           proxyPort: () => this.probePort,
           log
@@ -1242,12 +1250,12 @@ export class Core extends EventEmitter {
             exclude: this.ownPrograms()
           }
         : undefined
-      // Pointing Windows' DNS at Bridge only helps with clean answers (DNS-over-HTTPS); without them
-      // Bridge's own lookups would go through Windows and so back to itself. It can only be port 53.
-      const cleanDns = localDns?.type === 'https'
+      // Pointing Windows' DNS at Bridge only helps with clean answers (the DNS relay, which asks by
+      // address only, so Bridge's own lookups through Windows don't loop back). It can only be port 53.
+      const cleanDns = !!dnsRelayPort
       const dnsAddress = redirect && cleanDns ? await freeDnsAddress() : undefined
       const dnsListen = dnsAddress ? { address: dnsAddress, port: 53 } : undefined
-      if (redirect && !cleanDns) this.log('DNS-over-HTTPS is not reachable on this network, so apps on the VPN keep your normal DNS; blocked sites (such as Discord) may not open in them', 'warn')
+      if (redirect && !cleanDns) this.log("Bridge's DNS did not start, so apps on the VPN keep your normal DNS; blocked sites (such as Discord) may not open in them", 'warn')
       else if (redirect && !dnsListen) {
         const owners = await dnsPortOwners().catch(() => '')
         this.log(`Port 53 is in use by another program${owners ? ` (${owners})` : ''}, so apps on the VPN keep your normal DNS; blocked sites (such as Discord) may not open in them. Close that program or turn off its DNS, then reconnect.`, 'warn')
