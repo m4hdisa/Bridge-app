@@ -10,6 +10,8 @@ A Windows VPN client with **per-app routing**: you pick which apps go through th
 
 Get the latest installer from [Releases](https://github.com/m4hdisa/Bridge-app/releases/latest) (`Bridge.Setup.x.y.z.exe`, Windows 10/11, x64). Install over an older version to update; your servers and settings are kept. After that, Bridge updates itself: it shows **Install and restart** when a new version is out.
 
+**Android:** [Bridge for Android](https://github.com/m4hdisa/Bridge-Android) (its [releases](https://github.com/m4hdisa/Bridge-Android/releases), also posted here as `android-v…`), with Free WARP, Xray configs and a dashboard with a map. `arm64-v8a` is for almost every phone.
+
 Per-App and Full VPN modes need administrator rights. Bridge offers a "Restart as admin" button when needed.
 
 ## Features
