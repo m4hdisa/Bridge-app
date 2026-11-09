@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildConfig, buildHelperConfig, buildTestConfig, processPathRegex, serverTag, SPEED_TEST_PORTS, withServerIp, writeAppRuleSets, type ClashApi } from './config'
-import { appSlots, dnsPortOwners, freeDnsAddress, perAppDriverReady, pointDnsHere, restoreDns, startPerApp, startWatchdog, type PerAppOptions, type PerAppRun } from './perapp'
+import { appSlots, dnsPortOwners, freeDnsAddress, perAppDriverReady, perAppRouteProblem, pointDnsHere, restoreDns, startPerApp, startWatchdog, type PerAppOptions, type PerAppRun } from './perapp'
 import { connect, isIP } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { DnsRelay } from './dnsrelay'
@@ -1187,9 +1187,14 @@ export class Core extends EventEmitter {
       pinning.catch(() => undefined)
       // Per-App hands only the chosen apps to Bridge through its driver when that is installed,
       // and falls back to the VPN adapter (which every app's traffic passes) when it isn't.
-      const redirect = settings.mode === 'per-app' && !!this.paths.perApp && (await perAppDriverReady(this.paths.perApp))
-      if (settings.mode === 'per-app' && !redirect) {
+      const driverInstalled = settings.mode === 'per-app' && !!this.paths.perApp && (await perAppDriverReady(this.paths.perApp))
+      const routeProblem = driverInstalled ? await perAppRouteProblem(this.paths.perApp!) : undefined
+      const redirect = driverInstalled && !routeProblem
+      if (settings.mode === 'per-app' && !driverInstalled) {
         this.log('The Per-App driver is not installed, so Per-App uses the VPN adapter; connecting and disconnecting can interrupt apps that are not on the VPN, such as games. Install it from the Apps page.', 'warn')
+      }
+      if (routeProblem) {
+        this.log(`The Per-App driver can't work on this connection: ${routeProblem}. Per-App uses the VPN adapter this time, so connecting and disconnecting can interrupt apps that are not on the VPN. Turning off another VPN, or restarting Windows after installing the driver, may help.`, 'warn')
       }
       const tun = usesTun(settings.mode) && !redirect
       // Both need Bridge's own clean DNS: TUN answers every app's lookups, and so does Per-App (see pointDnsHere).

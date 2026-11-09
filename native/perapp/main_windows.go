@@ -26,9 +26,19 @@ func main() {
 	config := flag.String("config", "", "the rules Bridge wrote")
 	parent := flag.Int("parent", 0, "stop when this process (Bridge) exits")
 	check := flag.Bool("check", false, "only say whether the driver is installed")
+	checkRoute := flag.Bool("check-route", false, "only say whether the driver sees the adapter the internet goes through")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetOutput(os.Stdout)
+
+	if *checkRoute {
+		if err := CheckRoute(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		fmt.Println("ok")
+		return
+	}
 
 	if *check {
 		api, err := A.NewNdisApi()

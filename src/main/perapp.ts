@@ -49,6 +49,17 @@ export async function perAppDriverReady(helper: string): Promise<boolean> {
   return existsSync(helper) && !!(await serviceState(DRIVER))
 }
 
+/** Why the installed driver can't redirect on the current network, or undefined when it can. */
+export async function perAppRouteProblem(helper: string): Promise<string | undefined> {
+  try {
+    await exec(helper, ['-check-route'], { windowsHide: true, timeout: 5000 })
+    return undefined
+  } catch (e) {
+    const { stdout, message } = e as { stdout?: string; message: string }
+    return stdout?.trim() || message
+  }
+}
+
 /** What install-driver.ps1's exit codes mean. */
 const INSTALL_RESULTS: Record<number, string> = {
   3: 'The Per-App driver file that came with Bridge is damaged; reinstall Bridge',

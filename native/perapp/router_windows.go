@@ -43,7 +43,7 @@ type Router struct {
 	notify  windows.Handle
 }
 
-func NewRouter(c *Config) (*Router, error) {
+func openDriver() (*A.NdisApi, error) {
 	api, err := A.NewNdisApi()
 	if err != nil {
 		return nil, fmt.Errorf("can't open the Windows Packet Filter driver: %w", err)
@@ -51,6 +51,14 @@ func NewRouter(c *Config) (*Router, error) {
 	if !api.IsDriverLoaded() {
 		api.Close()
 		return nil, fmt.Errorf("the Windows Packet Filter driver is not installed")
+	}
+	return api, nil
+}
+
+func NewRouter(c *Config) (*Router, error) {
+	api, err := openDriver()
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{
@@ -111,24 +119,20 @@ func (r *Router) attach() error {
 	if err != nil {
 		return err
 	}
-	info, _, err := N.GetNetworkAdapterInfo(r.api)
-	if err != nil || len(info) == 0 {
-		return fmt.Errorf("no network adapter found: %v", err)
-	}
-	best, err := N.GetBestInterface(info, "8.8.8.8")
+	index, name, err := internetAdapter(r.api, adapters)
 	if err != nil {
-		return fmt.Errorf("no adapter reaches the internet: %w", err)
+		return err
 	}
 	filter, err := D.NewQueuedPacketFilter(r.ctx, r.api, adapters, nil, r.outgoing)
 	if err != nil {
 		return err
 	}
-	if err := filter.StartFilter(best.AdapterIndex); err != nil {
+	if err := filter.StartFilter(index); err != nil {
 		return err
 	}
 	r.filter = filter
-	r.ifIndex = best.AdapterIndex
-	log.Printf("redirecting on %s", best.Name)
+	r.ifIndex = index
+	log.Printf("redirecting on %s", name)
 	return nil
 }
 
@@ -136,13 +140,13 @@ func (r *Router) networkChanged(_ uintptr, _ *windows.MibIpInterfaceRow, _ N.Mib
 	go func() {
 		// Let the new network settle first.
 		time.Sleep(time.Second)
-		info, _, err := N.GetNetworkAdapterInfo(r.api)
+		adapters, err := r.api.GetTcpipBoundAdaptersInfo()
 		if err != nil {
 			return
 		}
-		best, err := N.GetBestInterface(info, "8.8.8.8")
+		index, _, err := internetAdapter(r.api, adapters)
 		r.mu.Lock()
-		same := err == nil && best.AdapterIndex == r.ifIndex && r.filter != nil
+		same := err == nil && index == r.ifIndex && r.filter != nil
 		r.mu.Unlock()
 		if err != nil || same {
 			return
