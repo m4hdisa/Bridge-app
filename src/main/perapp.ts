@@ -30,11 +30,15 @@ function powershell(script: string): Promise<{ stdout: string }> {
   return exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true })
 }
 
-/** "RUNNING", "STOPPED", ... or undefined when the service doesn't exist. */
+/**
+ * "RUNNING", "STOPPED", ... or undefined when the service doesn't exist. sc.exe's words are
+ * translated on some Windows languages: its exit code says the service exists, so a state it
+ * can't read is "UNKNOWN", not missing.
+ */
 async function serviceState(name: string): Promise<string | undefined> {
   try {
     const { stdout } = await exec('sc.exe', ['query', name], { windowsHide: true })
-    return stdout.match(/STATE\s*:\s*\d+\s+(\w+)/)?.[1]
+    return stdout.match(/STATE\s*:\s*\d+\s+(\w+)/)?.[1] ?? 'UNKNOWN'
   } catch {
     return undefined
   }
@@ -83,6 +87,7 @@ export async function installPerAppDriver(script: string, helper: string, log: L
   }
   if (code === 3010) log('Windows needs a restart to finish the Per-App driver; restart, then press Install driver again', 'warn')
   else if (code !== 0) log(`${INSTALL_RESULTS[code] ?? `The Per-App driver installation failed (code ${code})`}. Details: %TEMP%\\bridge-install-driver.log`, 'warn')
+  if (!existsSync(helper)) log('bridge-perapp.exe is missing from Bridge\'s folder; an antivirus may have removed it. Allow it and reinstall Bridge', 'warn')
   const ready = await perAppDriverReady(helper)
   log(ready ? 'Per-App driver is installed' : 'Per-App driver is not installed', ready ? 'info' : 'warn')
   return ready

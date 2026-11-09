@@ -35,13 +35,31 @@ function Run($exe, $arguments) {
   return $p.ExitCode
 }
 
-function MsiProductCode($path) {
+# [string], because COM refuses the wrapped string Join-Path returns (DISP_E_TYPEMISMATCH).
+function MsiProductCode([string]$path) {
   $i = New-Object -ComObject WindowsInstaller.Installer
   $db = $i.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $i, @($path, 0))
   $v = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @("SELECT Value FROM Property WHERE Property='ProductCode'"))
-  $v.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $v, $null)
+  # [void]: anything left in the pipeline would become part of what this function returns.
+  [void]$v.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $v, $null)
   $r = $v.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $v, $null)
-  return $r.GetType().InvokeMember('StringData', 'GetProperty', $null, $r, 1)
+  $code = $r.GetType().InvokeMember('StringData', 'GetProperty', $null, $r, 1)
+  # Let go of the file, so msiexec and the clean-up after it don't find it locked.
+  foreach ($o in @($r, $v, $db, $i)) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($o) }
+  return $code
+}
+
+function MsiProductInstalled([string]$code) {
+  $i = New-Object -ComObject WindowsInstaller.Installer
+  return $i.GetType().InvokeMember('ProductState', 'GetProperty', $null, $i, @($code)) -eq 5
+}
+
+# Whether Windows has the driver's service, the same thing Bridge checks (perAppDriverReady in
+# src/main/perapp.ts). A ndisrd.sys left on disk does nothing without it. sc.exe's exit code, not
+# its text, since that text is translated on some Windows languages.
+function DriverService() {
+  & sc.exe query NDISRD | Out-Null
+  return $LASTEXITCODE -eq 0
 }
 
 function FirewallRule() {
@@ -91,9 +109,11 @@ try {
     $v = (Get-Item -LiteralPath $sys).VersionInfo
     $driver = [version]('{0}.{1}.{2}.{3}' -f $v.FileMajorPart, $v.FileMinorPart, $v.FileBuildPart, $v.FilePrivatePart)
   }
-  if ($driver -ge [version]'3.6.1.0' -and $driver -lt [version]'4.0.0.0') {
+  $usable = $driver -ge [version]'3.6.1.0' -and $driver -lt [version]'4.0.0.0'
+  if ($usable -and (DriverService)) {
     Note "Windows Packet Filter $driver is already installed"
   } else {
+    if ($usable) { Note "ndisrd.sys $driver is on disk but its Windows service is missing; installing the driver again" }
     # Copied out of Bridge's folder (which the user can write to) and checked before running elevated.
     $work = Join-Path $env:SystemRoot "Temp\bridge-perapp-$PID"
     New-Item -ItemType Directory -Path $work -Force | Out-Null
@@ -102,6 +122,12 @@ try {
     $hash = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLower()
     if ($hash -ne $msiSha256) { Note "$msiFile is not the expected file ($hash)"; exit 3 }
     $product = MsiProductCode $msi
+    # Windows does nothing for /i on a product it still lists, so a broken install comes off first.
+    if (MsiProductInstalled $product) {
+      $code = Run 'msiexec.exe' "/x $product /qn /norestart"
+      Note "Removed the broken Windows Packet Filter install with code $code"
+      if ($code -eq 3010 -or $code -eq 1641) { $restart = $true }
+    }
     # ARPSYSTEMCOMPONENT keeps it out of the installed apps list; Bridge's uninstaller removes it.
     $code = Run 'msiexec.exe' "/i `"$msi`" /qn /norestart ARPSYSTEMCOMPONENT=1"
     Note "Windows Packet Filter finished with code $code"
@@ -110,6 +136,7 @@ try {
     elseif ($code -ne 0) { exit $code }
     New-Item -Path $key -Force | Out-Null
     Set-ItemProperty -LiteralPath $key -Name DriverProductCode -Value $product
+    if (-not $restart -and -not (DriverService)) { Note 'Windows Packet Filter installed, but its Windows service is still missing'; exit 1603 }
   }
 
   FirewallRule
