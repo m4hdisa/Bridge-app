@@ -19,7 +19,11 @@
     ${if} ${isUpdated}
       Abort
     ${endif}
+    ; The file alone isn't enough: without its Windows service the driver does nothing.
+    ClearErrors
+    ReadRegDWORD $0 HKLM "SYSTEM\CurrentControlSet\Services\NDISRD" "Start"
     ${if} ${FileExists} "$WINDIR\Sysnative\drivers\ndisrd.sys"
+    ${andIfNot} ${Errors}
       Abort
     ${endif}
     !insertmacro MUI_HEADER_TEXT "Per-App driver  |  درایور برنامه‌محور" "Optional, recommended for Per-App mode  |  اختیاری، برای حالت برنامه‌محور پیشنهاد می‌شود"

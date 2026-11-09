@@ -12,12 +12,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -41,6 +44,13 @@ var vazirBold []byte
 
 // The window's size in the page's pixels; scaled to the screen.
 const width, height = 440, 600
+
+const (
+	// Asks a new copy of Bridge Setup to try WebView2 with a folder outside %TEMP%.
+	retryFlag = "--webview-retry"
+	// How long WebView2 gets to make the window, even on a slow PC's first start.
+	windowTimeout = 30 * time.Second
+)
 
 var (
 	user32  = windows.NewLazySystemDLL("user32.dll")
@@ -86,10 +96,45 @@ func main() {
 		}
 	}
 
+	dataPath := filepath.Join(work, "webview")
+	retrying := slices.Contains(os.Args[1:], retryFlag)
+	if retrying {
+		dataPath = filepath.Join(os.Getenv("LOCALAPPDATA"), "Bridge Setup WebView")
+		defer os.RemoveAll(dataPath)
+	}
+	var once sync.Once
+	var windowUp atomic.Bool
+	giveUp := func(reason string) {
+		once.Do(func() {
+			logf("the window could not open: %s", reason)
+			hideWindow("Bridge Setup")
+			code := 0
+			if retrying {
+				logf("running the classic installer")
+				if err := payload.Extract(f, installer); err != nil {
+					fail(err)
+				}
+				code = run(installer, "")
+			} else {
+				logf("trying again with another WebView2 folder")
+				code = run(self, retryFlag)
+			}
+			os.RemoveAll(work)
+			os.Exit(code)
+		})
+	}
+	log.SetFlags(0)
+	log.SetOutput(libraryLog{giveUp})
+	time.AfterFunc(windowTimeout, func() {
+		if !windowUp.Load() {
+			giveUp("no window after " + windowTimeout.String())
+		}
+	})
+
 	setDpiAware()
 	scale := float64(dpi()) / 96
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
-		DataPath:  filepath.Join(work, "webview"),
+		DataPath:  dataPath,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
 			Title:  "Bridge Setup",
@@ -99,6 +144,7 @@ func main() {
 			Center: true,
 		},
 	})
+	windowUp.Store(true)
 	if w == nil {
 		// No WebView2 on this PC: the classic installer, with its own pages.
 		logf("WebView2 is not available; running the classic installer")
@@ -121,6 +167,28 @@ func main() {
 	must(w.Bind("setupClose", s.close))
 	w.SetHtml(html())
 	w.Run()
+}
+
+// libraryLog takes what the WebView2 library logs. When it can't make its window it ends the
+// program with log.Fatal, which a windowed program has nowhere to show, so the reason goes to
+// Bridge Setup's log and giveUp runs before the library can exit.
+type libraryLog struct{ giveUp func(string) }
+
+func (l libraryLog) Write(p []byte) (int, error) {
+	text := strings.TrimSpace(string(p))
+	logf("WebView2: %s", text)
+	if strings.Contains(text, "failed with") {
+		l.giveUp(text)
+	}
+	return len(p), nil
+}
+
+// hideWindow hides the empty window the library showed before it failed.
+func hideWindow(title string) {
+	t, _ := windows.UTF16PtrFromString(title)
+	if h, _, _ := user32.NewProc("FindWindowW").Call(0, uintptr(unsafe.Pointer(t))); h != 0 {
+		showWindow(h, 0)
+	}
 }
 
 func html() string {
@@ -165,8 +233,20 @@ func (s *setup) info() info {
 	if id, _, _ := kernel.NewProc("GetUserDefaultUILanguage").Call(); id&0x3ff == 0x29 {
 		lang = "fa"
 	}
-	_, err := os.Stat(filepath.Join(os.Getenv("SystemRoot"), "System32", "drivers", "ndisrd.sys"))
-	return info{Version: s.payload.Meta.Version, Lang: lang, Dir: dir, Existing: version, DriverInstalled: err == nil}
+	return info{Version: s.payload.Meta.Version, Lang: lang, Dir: dir, Existing: version, DriverInstalled: driverInstalled()}
+}
+
+// driverInstalled needs the driver's file and its Windows service: a file left behind does nothing.
+func driverInstalled() bool {
+	if _, err := os.Stat(filepath.Join(os.Getenv("SystemRoot"), "System32", "drivers", "ndisrd.sys")); err != nil {
+		return false
+	}
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\NDISRD`, registry.READ)
+	if err != nil {
+		return false
+	}
+	k.Close()
+	return true
 }
 
 // installed is where Bridge already is, from the entry its installer leaves for Windows' app list.
