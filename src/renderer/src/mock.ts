@@ -203,6 +203,8 @@ export function createMockBridge(): BridgeApi {
       for (const progress of ['Checking your network', 'Finding a way through your network (trying 5 at once)', 'Starting the VPN adapter']) {
         setStatus({ state: 'starting', mode: state.settings.mode, connectingAt, progress })
         await wait(1200)
+        // Cancelled (Disconnect while connecting), like the real app.
+        if (status.state !== 'starting') return
       }
       // A server whose name says "Fail" (or localStorage "bridge.mockFail") shows the failed-connect state.
       if (state.servers.find((s) => s.id === state.selectedServerId)?.name.includes('Fail') || localStorage.getItem('bridge.mockFail')) {

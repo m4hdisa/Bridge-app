@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { t } from '@/i18n'
 import { ConnectButton } from '@/components/ConnectButton'
 import { AppsTable, busiestApps } from '@/components/AppsTable'
-import { AppIcon, CloudflareMark, Flag, LatencyPill, StatusDot } from '@/components/common'
+import { AppIcon, Flag, LatencyPill, StatusDot, WarpMark, warpLocation } from '@/components/common'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/misc'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -105,8 +105,10 @@ export function Home({ state, status, stats, run, go }: PageProps) {
               <ConnectButton
                 look={state.settings.buttonStyle}
                 state={running ? 'on' : busy ? 'busy' : 'off'}
-                label={running ? t('Disconnect') : status.state === 'starting' ? t('Connecting…') : status.state === 'stopping' ? t('Stopping…') : t('Connect')}
-                disabled={busy || (!running && (!server || needsAdmin))}                onClick={() => run(() => (running ? api.disconnect() : api.connect()))}
+                label={running ? t('Disconnect') : status.state === 'starting' ? t('Cancel') : status.state === 'stopping' ? t('Stopping…') : t('Connect')}
+                // While connecting, pressing it again cancels.
+                disabled={status.state === 'stopping' || (!running && !busy && (!server || needsAdmin))}
+                onClick={() => run(() => (running || status.state === 'starting' ? api.disconnect() : api.connect()))}
               />
               <div className="flex w-full min-w-0 flex-col items-center gap-4">
                 <div>
@@ -129,7 +131,7 @@ export function Home({ state, status, stats, run, go }: PageProps) {
                     )}
                   </div>
                 </div>
-                {running && <ConnectionPanel status={status} viaWarp={viaWarp} down={stats?.downSpeed} up={stats?.upSpeed} />}
+                {running && <ConnectionPanel status={status} viaWarp={viaWarp} warpCode={warpLocation(state.settings.warpPsiphon)} down={stats?.downSpeed} up={stats?.upSpeed} />}
               </div>
             </div>
 
@@ -165,6 +167,7 @@ export function Home({ state, status, stats, run, go }: PageProps) {
                   pinging={state.pinging}
                   subscriptions={state.subscriptions}
                   auto={state.settings.autoServer}
+                  warpCode={warpLocation(state.settings.warpPsiphon)}
                   selectedId={state.selectedServerId}
                   onChange={(id) => run(() => api.selectServer(id))}
                   onManage={() => go('servers')}
@@ -239,14 +242,15 @@ export function Home({ state, status, stats, run, go }: PageProps) {
 }
 
 /** Where traffic exits and how fast it moves, as one panel under the connect button. */
-function ConnectionPanel({ status, viaWarp, down, up }: { status: CoreStatus; viaWarp: boolean; down?: number; up?: number }) {
+function ConnectionPanel({ status, viaWarp, warpCode, down, up }: { status: CoreStatus; viaWarp: boolean; warpCode?: string; down?: number; up?: number }) {
   const exit = status.exit
   return (
     <div className="bg-card/60 w-full max-w-xs overflow-hidden rounded-xl border text-start text-sm shadow-[inset_0_1px_0_oklch(1_0_0/4%)]">
       <div className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5">
         {exit || viaWarp ? (
           <>
-            {viaWarp ? <CloudflareMark className="h-4 w-6" /> : <Flag code={exit?.countryCode} className="h-4 w-6 shrink-0" />}
+            {/* WARP: the real exit's flag once known, the chosen location until then. */}
+            {viaWarp ? <WarpMark large code={exit?.countryCode ?? warpCode} /> : <Flag code={exit?.countryCode} className="h-4 w-6 shrink-0" />}
             <div className="min-w-0 flex-1 leading-tight">
               <div className="truncate font-medium">{viaWarp ? t('Cloudflare WARP') : exit?.country}</div>
               <div className="text-muted-foreground truncate text-xs">
@@ -401,6 +405,7 @@ function ServerPicker({
   pinging,
   subscriptions,
   auto,
+  warpCode,
   selectedId,
   onChange,
   onManage
@@ -410,6 +415,8 @@ function ServerPicker({
   subscriptions: PageProps['state']['subscriptions']
   /** Auto (best ping) is on; selectedId is then the server it picked. */
   auto: boolean
+  /** The country Free WARP leaves from (see warpLocation). */
+  warpCode?: string
   selectedId?: string
   onChange: (id: string) => void
   onManage: () => void
@@ -463,7 +470,7 @@ function ServerPicker({
             {g.items.map((s) => (
               <SelectItem key={s.id} value={s.id}>
                 <span className="flex min-w-0 items-center gap-2">
-                  {isWarp(s) && <CloudflareMark className="h-3 w-4" />}
+                  {isWarp(s) && <WarpMark code={warpCode} />}
                   <span className="truncate">{s.name}</span>
                   {isWarp(s) ? (
                     <Badge variant="success">{t('Free')}</Badge>

@@ -878,7 +878,9 @@ function updateTray(): void {
       { type: 'separator' },
       running
         ? { label: fa ? 'قطع اتصال' : 'Disconnect', click: () => void core.stop() }
-        : { label: fa ? 'اتصال' : 'Connect', enabled: !!server, click: () => void connect().catch((e) => core.log(String(e.message ?? e), 'error')) },
+        : core.status.state === 'starting'
+          ? { label: fa ? 'لغو اتصال' : 'Cancel connecting', click: () => void core.stop() }
+          : { label: fa ? 'اتصال' : 'Connect', enabled: !!server, click: () => void connect().catch((e) => core.log(String(e.message ?? e), 'error')) },
       { type: 'separator' },
       { label: fa ? 'خروج' : 'Quit', click: () => { quitting = true; app.quit() } }
     ])

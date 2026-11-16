@@ -1,6 +1,6 @@
 // Small building blocks shared by the pages.
 import * as React from 'react'
-import { AppWindow, Globe } from 'lucide-react'
+import { AppWindow, Globe, Zap } from 'lucide-react'
 import * as Flags from 'country-flag-icons/react/3x2'
 import { BRIDGE_HOLE_R, BRIDGE_HOLES, BRIDGE_RECTS, LOGO_COLOR, LOGO_TILE } from '../../../shared/logo'
 import type { AppRoute } from '../../../shared/types'
@@ -71,10 +71,82 @@ export function RouteBadge({ route }: { route?: AppRoute }) {
 }
 
 /** A country flag as an SVG (Windows can't draw flag emoji); a globe if the code is unknown. */
+/** Iran's flag as plain green, white and red stripes, without the emblem and the writing. */
+function IranStripes({ className, title }: { className?: string; title?: string }) {
+  return (
+    <svg viewBox="0 0 3 2" preserveAspectRatio="none" className={className} role="img">
+      {title && <title>{title}</title>}
+      <rect width="3" height="2" fill="#DA0000" />
+      <rect width="3" height="1.3333" fill="#FFFFFF" />
+      <rect width="3" height="0.6667" fill="#239F40" />
+    </svg>
+  )
+}
+
+type FlagSvg = React.ComponentType<{ className?: string; title?: string }>
+
+function flagSvg(code?: string): FlagSvg | undefined {
+  if (!code) return undefined
+  const c = code.toUpperCase()
+  return c === 'IR' ? IranStripes : (Flags as Record<string, FlagSvg>)[c]
+}
+
 export function Flag({ code, className }: { code?: string; className?: string }) {
-  const Svg = code ? (Flags as Record<string, React.ComponentType<{ className?: string; title?: string }>>)[code.toUpperCase()] : undefined
+  const Svg = flagSvg(code)
   if (!Svg) return <Globe className={cn('text-muted-foreground h-3.5 w-5', className)} />
   return <Svg title={code} className={cn('h-3.5 w-5 shrink-0 rounded-[3px] shadow-[0_0_0_1px] shadow-white/10', className)} />
+}
+
+/** RoundFlag's stand-in "code" for Fastest: a lightning bolt instead of a flag. */
+export const FASTEST = 'fastest'
+
+/** A country's flag cut to a circle; a globe without a country, a lightning bolt for Fastest. */
+export function RoundFlag({ code, className }: { code?: string; className?: string }) {
+  if (code === FASTEST) {
+    return (
+      <span className={cn('bg-primary/15 text-brand inline-flex size-3.5 shrink-0 items-center justify-center rounded-full', className)}>
+        <Zap className="size-[65%]" strokeWidth={2.5} />
+      </span>
+    )
+  }
+  const Svg = flagSvg(code)
+  return (
+    <span className={cn('relative inline-flex size-3.5 shrink-0 items-center justify-center overflow-hidden rounded-full', Svg && 'shadow-[0_0_0_1px] shadow-white/15', className)}>
+      {Svg ? <Svg title={code} className="absolute inset-y-0 left-1/2 h-full w-auto max-w-none -translate-x-1/2" /> : <Globe className="text-muted-foreground size-full" />}
+    </span>
+  )
+}
+
+/**
+ * Free WARP's location for a Settings.warpPsiphon value, as RoundFlag shows it: '' is Fastest,
+ * 'IR' Iran (both WARP alone), 'auto' any country (a globe), anything else a country through Psiphon.
+ */
+export function warpLocation(setting: string): string | undefined {
+  return !setting ? FASTEST : setting === 'auto' ? undefined : setting
+}
+
+/** Whether this Settings.warpPsiphon value leaves through Psiphon. */
+export function warpUsesPsiphon(setting: string): boolean {
+  return !!setting && setting !== 'IR'
+}
+
+/** A country's name in the app's language. */
+export function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames([document.documentElement.lang || 'en'], { type: 'region' }).of(code) ?? code
+  } catch {
+    return code
+  }
+}
+
+/** Free WARP's mark: Cloudflare's logo with a round flag of where it leaves from. */
+export function WarpMark({ code, large }: { code?: string; large?: boolean }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1">
+      <CloudflareMark className={large ? 'h-4 w-6' : undefined} />
+      <RoundFlag code={code} className={large ? 'size-4' : undefined} />
+    </span>
+  )
 }
 
 /** Bridge's logo: the white bridge mark on the brand-blue tile (the app icon is drawn from the same geometry). */

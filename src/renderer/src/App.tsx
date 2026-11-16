@@ -6,7 +6,7 @@ import type { AppState, CoreStatus, LogLine, TrafficStats, UpdateStatus } from '
 import { errorMessage, speed } from './format'
 import { cn } from '@/lib/utils'
 import { isRtl, setLanguage, t } from './i18n'
-import { BridgeLogo, CloudflareMark, Flag, StatusDot, type Tone } from '@/components/common'
+import { BridgeLogo, Flag, StatusDot, WarpMark, warpLocation, type Tone } from '@/components/common'
 import { Toaster } from '@/components/ui/misc'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -287,7 +287,11 @@ export function App() {
                 </div>
                 <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
                   {status.state === 'running' &&
-                    (server?.engine === 'aether' ? <CloudflareMark className="h-3 w-4" /> : status.exit && <Flag code={status.exit.countryCode} className="h-3 w-4" />)}
+                    (server?.engine === 'aether' ? (
+                      <WarpMark code={status.exit?.countryCode ?? warpLocation(state.settings.warpPsiphon)} />
+                    ) : (
+                      status.exit && <Flag code={status.exit.countryCode} className="h-3 w-4" />
+                    ))}
                   <span className="truncate">{server ? server.name : t('No server selected')}</span>
                 </div>
                 {status.state === 'running' && (

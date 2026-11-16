@@ -663,8 +663,12 @@ export class Core extends EventEmitter {
    * its own port) and the first one that carries real traffic wins; the others are stopped.
    */
   private async viaWarp(server: ServerProfile, gen: number): Promise<ServerProfile> {
+    // Free WARP itself has no method to choose any more, only a location: it races the fast ways.
+    // A saved config keeps the method it was found with.
+    if (!server.warp?.peer) server = { ...server, warp: { ...server.warp, method: 'auto' } }
+    // '' is Fastest and 'IR' Iran: both WARP alone. Anything else is Psiphon inside WARP.
     const choice = this.settings?.warpPsiphon
-    if (!choice) return this.viaWarpAlone(server, gen)
+    if (!choice || choice === 'IR') return this.viaWarpAlone(server, gen)
     const bin = this.paths.psiphon
     if (!bin || !existsSync(bin)) throw new Error('Psiphon (psiphon-tunnel-core.exe) not found; reinstall Bridge')
     this.psiphonChain = { bin, region: choice === 'auto' ? undefined : choice }
@@ -676,8 +680,14 @@ export class Core extends EventEmitter {
     } finally {
       this.psiphonChain = undefined
     }
+    // Psiphon doesn't get through on some networks at some times. WARP itself is up by then, so
+    // Bridge connects with it alone, as Fastest would, instead of failing.
+    const fastest = (why: string) => {
+      this.log(`Free WARP: ${why}, so Bridge connects with Fastest (WARP alone) instead`, 'warn')
+      return tunnel
+    }
     const port = this.wonWarp?.psiphonPort
-    if (!port) throw new Error('Psiphon did not start inside WARP')
+    if (!port) return fastest('Psiphon did not start inside WARP')
     this.log(`Free WARP: connecting Psiphon through WARP${choice === 'auto' ? '' : `, asking for an exit in ${choice}`}`)
     this.progress('Connecting Psiphon through WARP for an exit outside Iran')
     const deadline = Date.now() + PSIPHON_READY_MS
@@ -691,7 +701,7 @@ export class Core extends EventEmitter {
       }
       await new Promise((r) => setTimeout(r, 2000))
     }
-    throw new Error(`Psiphon didn't connect through WARP within ${PSIPHON_READY_MS / 1000} s. Choose another connection method to use WARP alone.`)
+    return fastest(`Psiphon didn't connect through WARP within ${PSIPHON_READY_MS / 1000} s`)
   }
 
   /** Set while connecting with Psiphon inside WARP: every WARP attempt then carries it. */
@@ -739,7 +749,7 @@ export class Core extends EventEmitter {
     this.log(`Free WARP connected with ${warpLabel(won.method)}${won.exit ? `, exit ${won.exit}` : ''}${won.peer ? ` via ${won.peer}` : ''} (local SOCKS ${won.port})`)
     if (won.exit === 'IR') {
       this.log(
-        'Free WARP: Cloudflare registers this exit address in Iran. Filtering is still bypassed (the traffic leaves abroad), but sites that block Iranian users may refuse. If one does, choose "Auto: exit outside Iran" or a Gool config.',
+        'Free WARP: Cloudflare registers this exit address in Iran. Filtering is still bypassed (the traffic leaves abroad), but sites that block Iranian users may refuse. If one does, choose another country under Location on the Free WARP card.',
         'warn'
       )
     }
@@ -1346,6 +1356,8 @@ export class Core extends EventEmitter {
         await setSystemProxy(settings.mixedPort)
         this.proxyPort = settings.mixedPort
       }
+      // Cancelled during the last steps: don't report it connected.
+      this.checkCancelled(gen)
       this.resetStats()
       this.handoffIf = tun ? net.otherInterface : undefined
       this.directSource = tun ? adapterIpv4(net.interfaceAlias) : undefined

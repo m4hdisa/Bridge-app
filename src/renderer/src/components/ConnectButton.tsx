@@ -31,7 +31,7 @@ function DashboardButton({ state, label, disabled, onClick }: { state: ConnectSt
       <button
         onClick={onClick}
         disabled={disabled}
-        aria-label={on ? t('Disconnect') : t('Connect')}
+        aria-label={on ? t('Disconnect') : busy ? label : t('Connect')}
         aria-pressed={on}
         className={cn(
           'group relative isolate flex size-44 cursor-pointer flex-col items-center justify-center gap-3 overflow-hidden rounded-full outline-none',
@@ -102,7 +102,7 @@ function ClassicButton({ state, label, disabled, onClick }: { state: ConnectStat
       <button
         onClick={onClick}
         disabled={disabled}
-        aria-label={on ? t('Disconnect') : t('Connect')}
+        aria-label={on ? t('Disconnect') : busy ? label : t('Connect')}
         className={cn(
           'group relative isolate flex size-44 cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden rounded-full outline-none transition-[box-shadow,transform] duration-300 focus-visible:ring-4 focus-visible:ring-ring/40 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50',
           on

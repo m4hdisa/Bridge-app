@@ -1,11 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { Check, ChevronRight, ClipboardPaste, Cloud, Copy, Ellipsis, FileText, Globe, KeyRound, Link2, LoaderCircle, Plus, RefreshCw, Repeat, Server as ServerIcon, Share2, Trash2, TriangleAlert, Zap } from 'lucide-react'
-import { PSIPHON_REGIONS, WARP_METHODS, type AppState, type ImportResult, type ServerProfile, type Subscription, type WarpOptions } from '../../../shared/types'
+import { PSIPHON_REGIONS, WARP_METHODS, type AppState, type ImportResult, type ServerProfile, type Subscription } from '../../../shared/types'
 import { api, type PageProps } from '../App'
 import { ago, bytes } from '../format'
 import { cn } from '@/lib/utils'
 import { t } from '@/i18n'
-import { CloudflareMark, EmptyState, Flag, LatencyPill, PageHeader } from '@/components/common'
+import { CloudflareMark, countryName, EmptyState, FASTEST, Flag, LatencyPill, PageHeader, RoundFlag, WarpMark, warpLocation, warpUsesPsiphon } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,7 +15,6 @@ import { Input, Textarea } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription, Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/misc'
 import { Progress } from '@/components/ui/progress'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 const DAY = 86400_000
@@ -591,27 +590,34 @@ function WarpCard({
     )
     setFinding(false)
   }
-  const method = s.warp?.method ?? 'auto'
-  // Psiphon is one more choice of the same menu; under it, the WARP method still runs the first part.
-  const choice = psiphon ? 'psiphon' : method
-  const choose = (v: string) =>
+  // Fastest and Iran are WARP alone; any other location is Psiphon carried inside WARP
+  // (Settings.warpPsiphon). Picking one also puts Free WARP in use, unless one of its saved configs already is.
+  const location = warpLocation(psiphon)
+  const inUse = selected || configs.some((c) => c.id === selectedId)
+  const locate = (v: string) =>
     run(async () => {
-      if (v === 'psiphon') return api.updateSettings({ warpPsiphon: psiphon || 'auto' })
-      if (psiphon) await api.updateSettings({ warpPsiphon: '' })
-      await api.setWarpMethod(s.id, v as WarpOptions['method'])
+      await api.updateSettings({ warpPsiphon: v })
+      if (!inUse) await api.selectServer(s.id)
     })
-  const hint = psiphon
-    ? t('WARP from Iran usually exits in Iran, even with two hops. Psiphon, carried inside WARP, leaves from another country, so sites that refuse Iranian users open. It is slower, connecting takes up to a minute and a half longer, and calls and games that use UDP may not work. The traffic passes through the Psiphon network.')
-    : method === 'auto'
-      ? t('Tries every fast way at once and keeps the fastest that works. The exit is usually registered in Iran: filtering is bypassed, but sites that block Iranian users may refuse.')
-      : method === 'auto-foreign'
-        ? t("Also tries two ways with two hops and waits for them, because their exit is outside Iran. Connecting takes longer, up to a minute, and the speed is lower. If neither gets through it connects another way, with an exit in Iran, and for half an hour doesn't wait for them.")
-        : t(WARP_METHODS.find((m) => m.id === method)?.hint ?? '')
+  // The two that pick for you on top, the countries under them.
+  const groups = [
+    [
+      { value: '', code: FASTEST, name: t('Fastest'), note: t('Whatever works now') },
+      { value: 'auto', code: undefined, name: t('Any country'), note: t('through Psiphon') }
+    ],
+    [
+      { value: 'IR', code: 'IR', name: countryName('IR'), note: t('WARP only') },
+      ...PSIPHON_REGIONS.map((code) => ({ value: code, code, name: countryName(code), note: t('through Psiphon') }))
+    ]
+  ]
+  const hint = warpUsesPsiphon(psiphon)
+    ? `${t('WARP from Iran usually exits in Iran, even with two hops. Psiphon, carried inside WARP, leaves from another country, so sites that refuse Iranian users open. It is slower, connecting takes up to a minute and a half longer, and calls and games that use UDP may not work. The traffic passes through the Psiphon network.')} ${t("If Psiphon doesn't connect on your network at the time, Bridge connects with Fastest instead.")}`
+    : t('Tries every fast way at once and keeps the fastest that works. The exit is usually registered in Iran: filtering is bypassed, but sites that block Iranian users may refuse.')
   return (
     <Card className={cn(selected && 'border-brand/50')}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <CloudflareMark />
+          <WarpMark code={location} />
           {t('Free WARP')}
           <Badge variant="success">{plus ? 'WARP+' : t('Free')}</Badge>
         </CardTitle>
@@ -651,41 +657,34 @@ function WarpCard({
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-1.5">
-        <div className="flex flex-wrap items-center gap-3">
-          <Label className="text-sm">{t('Connection method')}</Label>
-          <Select value={choice} onValueChange={choose}>
-            <SelectTrigger className="w-60 min-w-0 [&>span]:truncate">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">{t('Auto: fastest (recommended)')}</SelectItem>
-              <SelectItem value="auto-foreign">{t('Auto: exit outside Iran')}</SelectItem>
-              <SelectItem value="psiphon">{t('WARP + Psiphon')}</SelectItem>
-              {WARP_METHODS.map((m) => (
-                <SelectItem key={m.id} value={m.id}>
-                  {t(m.label)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {psiphon && (
-            <Select value={psiphon} onValueChange={(v) => run(() => api.updateSettings({ warpPsiphon: v }))}>
-              <SelectTrigger className="w-36" aria-label={t('Exit country')}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">{t('Any country')}</SelectItem>
-                {PSIPHON_REGIONS.map((code) => (
-                  <SelectItem key={code} value={code}>
-                    <span className="flex items-center gap-2">
-                      <Flag code={code} className="h-3 w-4" />
-                      {code}
+        <div className="text-sm font-medium">{t('Location')}</div>
+        <div role="radiogroup" aria-label={t('Location')} className="flex flex-col">
+          {groups.map((group, g) => (
+            <div key={g} className={cn('grid gap-1', g === 0 ? 'mb-3 grid-cols-2 border-b pb-3' : 'grid-cols-[repeat(auto-fill,minmax(11rem,1fr))]')}>
+              {group.map((l) => {
+                const on = psiphon === l.value
+                return (
+                  <button
+                    key={l.value}
+                    role="radio"
+                    aria-checked={on}
+                    onClick={() => !on && locate(l.value)}
+                    className={cn(
+                      'flex min-w-0 cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 text-start transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                      on ? 'border-brand/50 bg-primary/8' : 'hover:bg-muted/40 border-transparent'
+                    )}
+                  >
+                    <RoundFlag code={l.code} className="size-5" />
+                    <span className="flex min-w-0 flex-col leading-tight">
+                      <span className="truncate text-sm font-medium">{l.name}</span>
+                      <span className="text-muted-foreground truncate text-xs">{l.note}</span>
                     </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+                    {on && <Check className="text-brand ms-auto size-4 shrink-0" />}
+                  </button>
+                )
+              })}
+            </div>
+          ))}
         </div>
         <p className="text-muted-foreground text-xs">{hint}</p>
 
@@ -707,7 +706,7 @@ function WarpCard({
           {configs.length > 0 && (
             <div className="flex flex-col gap-1">
               {configs.map((c) => (
-                <WarpConfigRow key={c.id} server={c} selected={c.id === selectedId} run={run} />
+                <WarpConfigRow key={c.id} server={c} selected={c.id === selectedId} psiphon={psiphon} run={run} />
               ))}
             </div>
           )}
@@ -717,7 +716,9 @@ function WarpCard({
   )
 }
 
-function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; selected: boolean; run: PageProps['run'] }) {
+/** `psiphon` is Settings.warpPsiphon: with a location outside Iran, every saved config connects through Psiphon. */
+function WarpConfigRow({ server: s, selected, psiphon, run }: { server: ServerProfile; selected: boolean; psiphon: string; run: PageProps['run'] }) {
+  const location = warpLocation(psiphon)
   const w = s.warp!
   const label = WARP_METHODS.find((m) => m.id === w.method)?.label ?? t('Auto')
   const { sharing, share } = useWarpShare(s.id, run)
@@ -754,16 +755,28 @@ function WarpConfigRow({ server: s, selected, run }: { server: ServerProfile; se
           <TooltipContent>{t('Speed in Mbps when this config was found')}</TooltipContent>
         </Tooltip>
       )}
-      {w.exit && (
+      {warpUsesPsiphon(psiphon) ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
-              <Flag code={w.exit} className="h-3 w-4" />
-              {w.exit}
+              <RoundFlag code={location} className="size-3" />
+              {location ?? t('Any')}
             </span>
           </TooltipTrigger>
-          <TooltipContent>{w.exit === 'IR' ? t('Cloudflare registers this exit in Iran: filtering is bypassed, but some sites block Iranian users') : t('Exit country Cloudflare gave this config')}</TooltipContent>
+          <TooltipContent>{location ? t('Connects through Psiphon, with an exit in {country}', { country: countryName(location) }) : t('Connects through Psiphon, with an exit in any country')}</TooltipContent>
         </Tooltip>
+      ) : (
+        w.exit && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <Flag code={w.exit} className="h-3 w-4" />
+                {w.exit}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{w.exit === 'IR' ? t('Cloudflare registers this exit in Iran: filtering is bypassed, but some sites block Iranian users') : t('Exit country Cloudflare gave this config')}</TooltipContent>
+          </Tooltip>
+        )
       )}
       {w.readyMs !== undefined && <span className="text-muted-foreground tabular w-12 text-end text-xs">{(w.readyMs / 1000).toFixed(1)} s</span>}
       <Tooltip>
