@@ -78,6 +78,9 @@ const discord = new DiscordPresence((text, level) => core.log(text, level))
 const DISCORD_ICON = 'https://raw.githubusercontent.com/m4hdisa/Bridge-app/main/resources/icon.png'
 /** Cloudflare's own icon, shown small over the Bridge icon while on WARP. */
 const CLOUDFLARE_ICON = 'https://www.cloudflare.com/img/favicon/apple-touch-icon.png'
+/** Iran's flag as plain stripes, as the app shows it (resources/flag-ir.png); other countries come from flagcdn. */
+const IRAN_FLAG = 'https://raw.githubusercontent.com/m4hdisa/Bridge-app/main/resources/flag-ir.png'
+const flagImage = (code: string) => (code.toUpperCase() === 'IR' ? IRAN_FLAG : `https://flagcdn.com/w80/${code.toLowerCase()}.png`)
 
 /**
  * What Discord shows while connecting or connected: the server Bridge is on, the mode, where
@@ -96,7 +99,7 @@ function discordActivity(): DiscordActivity | null {
   const badge = warp
     ? { small_image: CLOUDFLARE_ICON, small_text: exit ? `Cloudflare WARP · Exit in ${exit.country}` : 'Cloudflare WARP' }
     : exit
-      ? { small_image: `https://flagcdn.com/w80/${exit.countryCode.toLowerCase()}.png`, small_text: exit.city ? `${exit.city}, ${exit.country}` : exit.country }
+      ? { small_image: flagImage(exit.countryCode), small_text: exit.city ? `${exit.city}, ${exit.country}` : exit.country }
       : {}
   return {
     details: s.state === 'starting' ? `Connecting to ${name}` : `Connected to ${name}`,

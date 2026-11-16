@@ -264,6 +264,8 @@ export interface CoreStatus {
   proxyPort?: number
   /** Where traffic leaves the VPN, looked up through the VPN shortly after connecting. */
   exit?: ExitLocation
+  /** Connected through Free WARP (or one of its saved configs). */
+  warp?: boolean
 }
 
 export interface ExitLocation {

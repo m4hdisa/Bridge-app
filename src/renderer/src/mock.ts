@@ -218,6 +218,7 @@ export function createMockBridge(): BridgeApi {
         serverId: state.selectedServerId,
         startedAt: now,
         proxyPort: 2080,
+        warp: state.servers.find((s) => s.id === state.selectedServerId)?.engine === 'aether' || undefined,
         otherTunnels: ['EZConnect (Wintun Userspace Tunnel)'],
         health: { server: { ok: true, latency: 412, checkedAt: now }, internet: { ok: true, latency: 96, checkedAt: now } }
       })

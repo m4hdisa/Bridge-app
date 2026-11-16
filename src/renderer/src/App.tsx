@@ -287,7 +287,7 @@ export function App() {
                 </div>
                 <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
                   {status.state === 'running' &&
-                    (server?.engine === 'aether' ? (
+                    (status.warp ? (
                       <WarpMark code={status.exit?.countryCode ?? warpLocation(state.settings.warpPsiphon)} />
                     ) : (
                       status.exit && <Flag code={status.exit.countryCode} className="h-3 w-4" />

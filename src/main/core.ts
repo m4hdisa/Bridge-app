@@ -1309,6 +1309,8 @@ export class Core extends EventEmitter {
       try {
         child = await timed('sing-box', launch(this.paths.singBox, configFile, this.paths.dataDir, api, this.coreLine))
       } catch (e) {
+        // Cancelled meanwhile: stop() is why sing-box went away, so don't start it again.
+        this.checkCancelled(gen)
         if (!ready.length || e instanceof Cancelled) throw e
         this.log(`sing-box did not start with the other servers ready (${e instanceof Error ? e.message : e}); starting with this one only, so switching servers will reconnect`, 'warn')
         kept = []
@@ -1369,17 +1371,20 @@ export class Core extends EventEmitter {
         serverId: server.id,
         startedAt: Date.now(),
         otherTunnels: net.otherTunnels.length ? net.otherTunnels : undefined,
-        proxyPort: settings.mixedPort
+        proxyPort: settings.mixedPort,
+        warp: usesWarp || undefined
       })
       this.log(`Connected in ${((Date.now() - began) / 1000).toFixed(1)} s (${steps.join(', ')})`)
       void this.checkHealth()
       this.healthTimer = setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS)
       if (usesWarp && !server.warp?.shared) void this.replaceStarterAccount().catch((e) => this.log(`Free WARP: ${e instanceof Error ? e.message : e}`, 'warn'))
     } catch (e) {
-      if (e instanceof Cancelled) {
+      // A step that failed after a cancel (stop() killed what it waited for) counts as cancelled,
+      // so it neither shows an error nor cleans up what a newer connect has started meanwhile.
+      if (e instanceof Cancelled || gen !== this.startGen || this.status.state !== 'starting') {
         // Disconnected while connecting: stop() already cleaned up and reported it. If a newer
         // start() is running, everything that is up now belongs to it, so touch nothing.
-        if (gen === this.startGen) {
+        if (gen === this.startGen && this.status.state !== 'starting') {
           await this.cleanup()
           this.setStatus({ state: 'stopped' })
         }
@@ -1575,7 +1580,8 @@ export class Core extends EventEmitter {
     await clashPut(api, '/proxies/proxy', { name: serverTag(server.id) })
     this.wonWarp = undefined
     this.log(`Switched to ${server.name} without reconnecting`)
-    this.setStatus({ ...this.status, serverId: server.id, health: undefined, exit: undefined, switchedAt: Date.now() })
+    // The servers kept ready are never Free WARP.
+    this.setStatus({ ...this.status, serverId: server.id, health: undefined, exit: undefined, switchedAt: Date.now(), warp: undefined })
     void this.checkHealth()
     return true
   }

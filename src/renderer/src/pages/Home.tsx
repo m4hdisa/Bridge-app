@@ -73,7 +73,8 @@ export function Home({ state, status, stats, run, go }: PageProps) {
   const busy = status.state === 'starting' || status.state === 'stopping'
   const mode = MODES.find((m) => m.id === state.settings.mode)!
   const server = state.servers.find((s) => s.id === state.selectedServerId)
-  const viaWarp = state.servers.find((s) => s.id === (status.serverId ?? state.selectedServerId))?.engine === 'aether'
+  // Connected: what the connection itself says. Otherwise the server it would use.
+  const viaWarp = status.state === 'running' ? !!status.warp : state.servers.find((s) => s.id === (status.serverId ?? state.selectedServerId))?.engine === 'aether'
   const needsAdmin = usesTun(state.settings.mode) && !admin
   const proxyAddress = `127.0.0.1:${status.proxyPort ?? state.settings.mixedPort}`
   const summary = connectionSummary(status)
