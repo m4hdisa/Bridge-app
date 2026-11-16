@@ -442,6 +442,26 @@ async function pickBestServer(): Promise<void> {
 let failedChecks = 0
 let lastCheckAt = 0
 let failingOver = false
+// Free WARP without Auto: after the same two failed checks, Bridge connects it again (a new tunnel,
+// and Psiphon again inside it), since a WARP tunnel the network dropped doesn't always come back by
+// itself. When that keeps failing, it waits longer before each next try.
+const WARP_RECOVERY_WAIT_MS = [0, 60_000, 120_000, 300_000, 600_000]
+let warpRecoveries = 0
+let warpRecoveredAt = 0
+function recoverWarp(): void {
+  const wait = WARP_RECOVERY_WAIT_MS[Math.min(warpRecoveries, WARP_RECOVERY_WAIT_MS.length - 1)]
+  if (Date.now() - warpRecoveredAt < wait) return
+  failingOver = true
+  warpRecoveries++
+  warpRecoveredAt = Date.now()
+  core.log(`Free WARP stopped carrying traffic, so Bridge connects it again${warpRecoveries > 1 ? ` (try ${warpRecoveries})` : ''}`, 'warn')
+  void connect()
+    .catch((e) => core.log(`Free WARP: connecting again failed: ${e instanceof Error ? e.message : e}`, 'error'))
+    .finally(() => {
+      failingOver = false
+      failedChecks = 0
+    })
+}
 function watchHealth(s: CoreStatus): void {
   const h = s.health?.server
   if (s.state !== 'running') {
@@ -451,9 +471,15 @@ function watchHealth(s: CoreStatus): void {
   if (!h || h.checkedAt === lastCheckAt) return
   lastCheckAt = h.checkedAt
   failedChecks = h.ok ? 0 : failedChecks + 1
+  if (h.ok) warpRecoveries = 0
   // Public configs come and go, so someone on one moves to the next public one, even with Auto off.
   const onPublic = !!store.state.servers.find((x) => x.id === store.state.selectedServerId)?.publicConfig
-  if (failedChecks < 2 || failingOver || !(store.state.settings.autoServer || onPublic)) return
+  if (failedChecks < 2 || failingOver) return
+  if (!(store.state.settings.autoServer || onPublic)) {
+    // Connecting again can't help when the computer's own internet is down too.
+    if (s.warp && s.health?.internet?.ok !== false) recoverWarp()
+    return
+  }
   failingOver = true
   void (async () => {
     const current = store.state.selectedServerId

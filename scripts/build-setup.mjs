@@ -1,7 +1,8 @@
 // Builds "Bridge Setup <version>.exe", the installer people download: Bridge's own window
-// (native/setup) with the electron-builder installer appended inside it. The electron-builder one
-// is published too, as "Bridge-Update-<version>.exe": latest.yml points at it, so updates stay
-// exactly as they were. Run after electron-builder (npm run dist does). Needs Go 1.26 or newer.
+// (native/setup) with the electron-builder installer appended inside it. It is the only file a
+// release needs: Bridge's updater runs it silently (/S), and then it installs without its window.
+// Releases up to 0.6.10 also had the inner "Bridge-Update-<version>.exe", which people downloaded
+// by mistake. Run after electron-builder (npm run dist does). Needs Go 1.26 or newer.
 import { execFileSync } from 'node:child_process'
 import { closeSync, createReadStream, createWriteStream, existsSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'

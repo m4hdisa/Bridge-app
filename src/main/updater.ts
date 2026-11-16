@@ -28,7 +28,8 @@ export async function checkForUpdate(current = app.getVersion()): Promise<Update
   const r = (await res.json()) as GithubRelease
   const version = r.tag_name.replace(/^v/, '')
   if (!isNewer(version, current)) return { state: 'latest', current, checkedAt: Date.now() }
-  const asset = r.assets.find((a) => /\.exe$/i.test(a.name))
+  // Bridge Setup installs silently too (/S); releases before 0.6.11 also had Bridge-Update-<version>.exe.
+  const asset = r.assets.find((a) => /^Bridge[ .]Setup.*\.exe$/i.test(a.name)) ?? r.assets.find((a) => /\.exe$/i.test(a.name))
   return {
     state: 'available',
     current,
