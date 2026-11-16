@@ -1,5 +1,5 @@
 // Runs sing-box as a child process and talks to it through its Clash API.
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -81,12 +81,20 @@ function adapterIpv4(alias?: string): string | undefined {
   return networkInterfaces()[alias]?.find((a) => a.family === 'IPv4' && !a.internal)?.address
 }
 
+/**
+ * Stops one of Bridge's engines together with the programs it started: Windows doesn't end
+ * child programs with their parent, and a Psiphon left running by a stopped Aether keeps its
+ * data file locked, so the next Psiphon can't start.
+ */
 async function killProcess(child?: ChildProcess): Promise<void> {
   if (!child || child.exitCode !== null || child.signalCode !== null) return
   child.removeAllListeners('exit')
   await new Promise<void>((resolve) => {
     child.once('exit', () => resolve())
-    child.kill()
+    if (process.platform === 'win32' && child.pid) {
+      // /T: the whole tree under this process (only Bridge's own, by its PID).
+      execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, (e) => e && child.kill())
+    } else child.kill()
   })
 }
 
@@ -682,17 +690,23 @@ export class Core extends EventEmitter {
     }
     // Psiphon doesn't get through on some networks at some times. WARP itself is up by then, so
     // Bridge connects with it alone, as Fastest would, instead of failing.
-    const fastest = (why: string) => {
+    // When Psiphon fails to start, Aether stops with it, so WARP then starts again on its own.
+    const won = this.wonWarp
+    const alive = () => !!won && won.child.exitCode === null && won.child.signalCode === null
+    const fastest = async (why: string): Promise<ServerProfile> => {
       this.log(`Free WARP: ${why}, so Bridge connects with Fastest (WARP alone) instead`, 'warn')
-      return tunnel
+      if (alive()) return tunnel
+      this.checkCancelled(gen)
+      return this.viaWarpAlone(server, gen)
     }
-    const port = this.wonWarp?.psiphonPort
+    const port = won?.psiphonPort
     if (!port) return fastest('Psiphon did not start inside WARP')
     this.log(`Free WARP: connecting Psiphon through WARP${choice === 'auto' ? '' : `, asking for an exit in ${choice}`}`)
     this.progress('Connecting Psiphon through WARP for an exit outside Iran')
     const deadline = Date.now() + PSIPHON_READY_MS
     while (Date.now() < deadline) {
       this.checkCancelled(gen)
+      if (!alive()) return fastest('Psiphon could not start, and the WARP core stopped with it (see the [warp] lines above)')
       const exit = await quickExit(port).catch(() => undefined)
       if (exit) {
         this.log(`Free WARP: Psiphon connected, exit ${exit} (local SOCKS ${port})`)
